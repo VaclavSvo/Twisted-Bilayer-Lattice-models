@@ -1,18 +1,18 @@
-"""bilayer.lattice_model: Model C, the two-layer tight-binding model
-(docs/1-theory.md §2.6, docs/2-methods.md §12.2).
+"""engine.lattice_model: the two-layer tight-binding (Bose-Hubbard) model and its
+mean-field and Gutzwiller ground states.
 
 Pinned numbers and their sources:
   * c = m^2 + n^2 sites per layer: index of the box superlattice (exact).
-  * J1, J2 from `bands.hopping_1d` (themselves pinned to the docs/1-theory.md
-    §3.2 table in test_bands.py); coordination 4 + 4 per site (separable lattice).
+  * J1, J2 from `bands.hopping_1d` (themselves pinned to the exact
+    lowest-band values in test_bands.py); coordination 4 + 4 per site (separable lattice).
   * S = 1 for the co-located AA pair (s(0) = 1); the AB value s(a/2)^2 and the
-    moire depth factor 1 - s(a/2)^2 = 0.92 at V0 = 8 (docs/1-theory.md §3.3).
+    moire depth factor 1 - s(a/2)^2 = 0.92 at V0 = 8 (exact 1D Wannier overlap).
   * U -> 0 superfluid fraction: the analytic tight-binding band at finite twist
     (`tb_superfluid_fraction`, derivation in its docstring); its q -> 0 limit
     sum_d d^2 J_d / kappa; with J3 kept it reproduces the exact band curvature
-    m/m* = 0.2806 (bands.effective_mass_ratio; docs/1-theory.md §3.2) to 1e-3.
+    m/m* = 0.2806 (bands.effective_mass_ratio, test_bands.py) to 1e-3.
   * Gutzwiller n = 1 lobe tip U/zJ = 3 + 2 sqrt 2 = 5.83 at mu/U = sqrt 2 - 1
-    (foundations note S6.2: "U/zJ = 5.83, i.e. U/J = 23.3").
+    (the standard single-site mean-field result: U/zJ = 5.83, i.e. U/J = 23.3).
 """
 
 import math
@@ -21,9 +21,9 @@ import numpy as np
 import pytest
 import torch
 
-from bilayer import bands
-from bilayer import lattice_model as lm
-from bilayer.units import KAPPA
+from twisted_bilayer.engine import bands
+from twisted_bilayer.engine import lattice_model as lm
+from twisted_bilayer.engine.units import KAPPA
 
 V0 = 8.0
 
@@ -114,7 +114,7 @@ def test_interlayer_AA_pair_and_AB_value(cell22, interlayer22):
     assert vals[k] == pytest.approx(bands.overlap_1d(V0, dp[k, 0]) * bands.overlap_1d(V0, dp[k, 1]), abs=1e-12)
     s_half_sq = bands.overlap_1d(V0, 0.5) ** 2
     assert vals[k] == pytest.approx(s_half_sq, abs=0.02)
-    # 1-theory §3.3: s(a/2) = 0.286 and the depth factor 1 - s(a/2)^2 = 0.92 at V0 = 8
+    # exact 1D overlap: s(a/2) = 0.286 and the depth factor 1 - s(a/2)^2 = 0.92 at V0 = 8
     assert diag["s_half_sq"] == pytest.approx(0.286**2, abs=5e-4)
     assert 1.0 - diag["s_half_sq"] == pytest.approx(0.92, abs=0.005)
     # on the discrete sites the most AB-like site has S_eff a bit above s(a/2)^2
@@ -238,7 +238,7 @@ def test_current_equals_dE_dtheta_and_routes_agree():
 def test_gutzwiller_mott_tip_square_lattice():
     """Plain square lattice (Omega_R = 0, nearest neighbour only): at
     mu/U = sqrt 2 - 1 the order parameter is finite just below
-    U/zJ = 3 + 2 sqrt 2 = 5.83 and zero just above (foundations note S6.2)."""
+    U/zJ = 3 + 2 sqrt 2 = 5.83 and zero just above (single-site mean-field lobe tip)."""
     tip = 3.0 + 2.0 * math.sqrt(2.0)
     assert tip == pytest.approx(5.83, abs=5e-3) and 4 * tip == pytest.approx(23.3, abs=0.05)
     muU = math.sqrt(2.0) - 1.0

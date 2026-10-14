@@ -1,6 +1,6 @@
-"""Model C: the two-layer tight-binding (Bose-Hubbard) model of the twisted
-bilayer on the commensurate supercell (docs/1-theory.md §2.6, docs/2-methods.md
-§12.2). Units a = 1, E_R = 1, hbar = 1, kappa = 1/pi^2.
+"""The two-layer tight-binding (Bose-Hubbard) model of the twisted bilayer on
+the commensurate supercell, with its mean-field (coherent-state) and Gutzwiller
+ground states. Units a = 1, E_R = 1, hbar = 1, kappa = 1/pi^2.
 
     H = - sum_sigma sum_{i != i'} J(|R_i - R_i'|) b_i^dag b_i'
         + Omega_R sum_{ij} S(R_i - R'_j) (b_i^dag c_j + h.c.)
@@ -10,7 +10,7 @@ eps_i = +delta/2 on layer 1 and -delta/2 on layer 2 (plus an optional site
 potential, e.g. a trap). Omega_R is the off-diagonal matrix element, as in the
 continuum engine.
 
-Geometry is the continuum model's frame exactly (`bilayer.lattice`): lattice 1
+Geometry is the continuum model's frame exactly (`engine.lattice`): lattice 1
 (potential U(R(+alpha) r)) has its sites at R(-alpha)(i, j), lattice 2 at
 R(+alpha)(i, j), tan(alpha) = n/m, AA at the origin, box [-L/2, L/2)^2 with
 L = sqrt(m^2 + n^2). In integer coordinates X = L x, Y = L y every site is a
@@ -20,7 +20,7 @@ M_2 = [[m, -n], [n, m]], and the box translations are X -> X + c, Y -> Y + c
 bookkeeping (wrapping, neighbour lookup, minimum image) is exact integer
 arithmetic.
 
-Matrix elements (from `bilayer.bands`, exact lowest band of V0 sin^2(pi x)):
+Matrix elements (from `engine.bands`, exact lowest band of V0 sin^2(pi x)):
   * J(d) = hopping_1d(V0) along each layer's own axes only (the Wannier
     function is a product w(x')w(y'), so there is no diagonal hopping);
     J1 and J2 by default (d_max = 2), longer range on request.
@@ -37,21 +37,21 @@ Matrix elements (from `bilayer.bands`, exact lowest band of V0 sin^2(pi x)):
     V = U at AA -- the a12 = a11 contact interaction of the two spin states
     (see `build_model`).
 
-Relative to the continuum model `bilayer.physics.BilayerGPE` (foundations note
-S6.2) the lattice model keeps the lowest band of each layer (exact J1, J2), the
-interlayer coupling projected on the two lowest bands, the on-site interaction,
-the geometry, twists (Peierls phases on every bond) and -- beyond the GPE --
-number quantisation (`gutzwiller`, the Mott corner). It drops higher bands
-(valid for V0 >~ 8 E_R; at 4 E_R J2/J1 = -7 %: use the continuum); J(d >= 3)
-by default (so the U -> 0 superfluid fraction is (J1 + 4 J2)/kappa, not the
-exact band curvature; see `tb_superfluid_fraction`); the part of Omega_R that
-couples a Wannier function to the other layer's higher bands (the second-order
-shift ~ -Omega_R^2 / gap, largest at AB, is missing, so the moire potential
-comes out too deep, more so at large Omega_R); inter-site interactions (by
-default also the interlayer V_ij above: without it a layer-symmetric state has
-half the continuum's mean-field interaction and no density dip at AA); and the
-density between sites (no Leggett density suppression of f_s). Validation
-numbers: docs/2-methods.md §12.2 and docs/3-results.md §10.
+Relative to the continuum model `engine.physics.BilayerGPE` the lattice model
+keeps the lowest band of each layer (exact J1, J2), the interlayer coupling
+projected on the two lowest bands, the on-site interaction, the geometry, twists
+(Peierls phases on every bond) and -- beyond the GPE -- number quantisation
+(`gutzwiller`, the Mott corner). It drops higher bands (valid for V0 >~ 8 E_R;
+at 4 E_R J2/J1 = -7 %: use the continuum); J(d >= 3) by default (so the U -> 0
+superfluid fraction is (J1 + 4 J2)/kappa, not the exact band curvature; see
+`tb_superfluid_fraction`); the part of Omega_R that couples a Wannier function
+to the other layer's higher bands (the second-order shift ~ -Omega_R^2 / gap,
+largest at AB, is missing, so the moire potential comes out too deep, more so at
+large Omega_R); inter-site interactions (by default also the interlayer V_ij
+above: without it a layer-symmetric state has half the continuum's mean-field
+interaction and no density dip at AA); and the density between sites (no Leggett
+density suppression of f_s). `compare_with_continuum` checks the k = 0 levels
+against the continuum bands.
 
 Mean-field ground state (`ground_state`): the discrete two-layer GPE (a product
 of coherent states) minimised at fixed N = filling x c (filling = atoms per a^2,
@@ -60,7 +60,7 @@ autograd), Newton-polished to residual ~1e-15 and checked to be a minimum
 (lowest constrained Hessian eigenvalue >= 0; saddles in the inter-pocket
 phases are escaped).
 Superfluid fraction (`superfluid_fraction`) by phase twist with the
-continuum's definitions (`bilayer.observables`), by energy and by current.
+continuum's definitions (`engine.observables`), by energy and by current.
 """
 
 from __future__ import annotations
@@ -77,7 +77,7 @@ from .lattice import MoireGeometry, moire_geometry
 from .observables import superfluid_fraction_energy
 from .units import KAPPA
 
-G2D_DEFAULT = 0.01576  # E_R a^2: g_3D/(sqrt(2 pi) l_z) at omega_z = 2 pi x 1 kHz (1-theory §2.3)
+G2D_DEFAULT = 0.01576  # E_R a^2: g_3D/(sqrt(2 pi) l_z) at omega_z = 2 pi x 1 kHz
 
 
 # -- sites ------------------------------------------------------------------------------
@@ -492,7 +492,7 @@ def build_model(
     frame: str = "layer1",
     cell: Supercell | None = None,
 ) -> LatticeModel:
-    """Assemble Model C. J_list overrides hopping_1d(V0, d_max) (J1, J2 by
+    """Assemble the two-layer tight-binding model. J_list overrides hopping_1d(V0, d_max) (J1, J2 by
     default); U overrides onsite_U(V0, g2d); frame picks the axes S is
     factorised along (`build_interlayer`).
 
@@ -581,7 +581,7 @@ def compare_with_continuum(
     delta: float = 0.0,
     **model_kw,
 ) -> dict:
-    """Lowest k = 0 levels of Model C against the continuum `moire_bands_q0`
+    """Lowest k = 0 levels of the tight-binding model against the continuum `moire_bands_q0`
     on the same supercell. The TB zero is the on-site energy, so the
     comparison is of (i) the level spacings E_k - E_0, (ii) the shift of the
     lowest level from the decoupled band bottom (TB: E_0 + 4 sum J_d;
@@ -957,7 +957,7 @@ def ground_state(
     history: int = 50,
     **model_kw,
 ) -> LatticeGroundState:
-    """Mean-field (coherent-state) ground state of Model C: the discrete
+    """Mean-field (coherent-state) ground state of the tight-binding model: the discrete
     two-layer GPE
 
         E[phi] = phi^dag H0(theta) phi + (U/2) sum_i |phi_i|^4,   sum |phi_i|^2 = N,
@@ -1025,8 +1025,7 @@ def superfluid_fraction(
 ) -> dict:
     """f_s along `axis` by phase twist (theta across the box, the continuum
     sweep's default 0.3; Peierls phases on every intra- and interlayer bond),
-    with the continuum's definitions (`bilayer.observables`, foundations
-    note S4.1-4.2):
+    with the continuum's definitions (`engine.observables`):
         energy:  f_s = (E(theta) - E(0)) L^2 / (N kappa theta^2),
         current: f_s = L^2 I / (2 kappa N theta).
     Returns {"fs_energy", "fs_current", "E0", "E_theta", "I", "gs0", "gs_theta"}."""
@@ -1182,7 +1181,7 @@ def gutzwiller(
     phi0=None,
     **model_kw,
 ) -> GutzwillerResult:
-    """Single-site Gutzwiller mean field of Model C (per-site Fock space
+    """Single-site Gutzwiller mean field of the tight-binding model (per-site Fock space
     0..n_max, self-consistent phi_i = <b_i>; the interlayer term at mean-field
     level like the hopping: Omega_R S_ij phi_j enters site i's field). Give
     exactly one of mu_over_U (grand canonical; mu measured from the on-site
@@ -1191,7 +1190,7 @@ def gutzwiller(
     Compressibility = d filling / d mu by central difference +- dmu_over_U U.
     On a plain square lattice (Omega_R = 0,
     J_list = (J,)) the n = 1 lobe tip is at U / zJ = 3 + 2 sqrt 2 = 5.83,
-    mu / U = sqrt 2 - 1 (foundations note S6.2)."""
+    mu / U = sqrt 2 - 1 (the standard single-site mean-field lobe tip)."""
     if (mu_over_U is None) == (filling is None):
         raise ValueError("give exactly one of mu_over_U and filling")
     if model is None:
