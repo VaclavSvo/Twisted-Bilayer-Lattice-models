@@ -31,11 +31,17 @@ Matrix elements (from `engine.bands`, exact lowest band of V0 sin^2(pi x)):
     The separable form ignores the relative rotation of the two Wannier
     functions; frame="mid" (factorise along the bisector) is closer to the
     exact 2D overlap and mirror symmetric between the layers.
-  * U = onsite_U(V0, g2d), the same in both layers. Optional
+  * U = onsite_U(V0, g2d), the same in both layers, with g2d from the
+    pancake frequency nu_z (`g2d_from_nu_z`, U ~ sqrt(nu_z)) or the shipped
+    G2D_DEFAULT (`resolve_g2d`). Optional
     (interlayer_interaction=True): the interlayer density-density term
     V_ij = g2d I2(Delta_x') I2(Delta_y'), I2(d) = int w^2(x) w^2(x - d) dx,
     V = U at AA -- the a12 = a11 contact interaction of the two spin states
     (see `build_model`).
+
+The paper's own simplified model (one layer, nearest-neighbour t, the other
+lattice as a site offset M_i) is built by `manybody.paper_model` as a
+one-layer `LatticeModel`; every solver below takes it.
 
 Relative to the continuum model `engine.physics.BilayerGPE` the lattice model
 keeps the lowest band of each layer (exact J1, J2), the interlayer coupling
@@ -44,10 +50,12 @@ projected on the two lowest bands, the on-site interaction, the geometry, twists
 (`gutzwiller`, the Mott corner). It drops higher bands (valid for V0 >~ 8 E_R;
 at 4 E_R J2/J1 = -7 %: use the continuum); J(d >= 3) by default (so the U -> 0
 superfluid fraction is (J1 + 4 J2)/kappa, not the exact band curvature; see
-`tb_superfluid_fraction`); the part of Omega_R that couples a Wannier function
-to the other layer's higher bands (the second-order shift ~ -Omega_R^2 / gap,
-largest at AB, is missing, so the moire potential comes out too deep, more so at
-large Omega_R); inter-site interactions (by default also the interlayer V_ij
+`tb_superfluid_fraction`); by default the part of Omega_R that couples a Wannier
+function to the other layer's higher bands (the second-order shift ~ -Omega_R^2 /
+gap, largest away from AA, so the moire potential comes out too deep, more so at
+large Omega_R; `interband_shift` computes it and build_model(interband=True) adds
+it, validated against the continuum in tests/test_lattice_model.py and
+docs/manybody.md); inter-site interactions (by default also the interlayer V_ij
 above: without it a layer-symmetric state has half the continuum's mean-field
 interaction and no density dip at AA); and the density between sites (no Leggett
 density suppression of f_s). `compare_with_continuum` checks the k = 0 levels
@@ -72,12 +80,37 @@ import numpy as np
 import scipy.sparse as sp
 import torch
 
+from . import bands
 from .bands import bands_1d, hopping_1d, onsite_U, overlap_1d, wannier_1d
 from .lattice import MoireGeometry, moire_geometry
 from .observables import superfluid_fraction_energy
-from .units import KAPPA
+from .units import KAPPA, lattice_units
 
-G2D_DEFAULT = 0.01576  # E_R a^2: g_3D/(sqrt(2 pi) l_z) at omega_z = 2 pi x 1 kHz
+# The shipped interaction of the lattice model: g_3D/(sqrt(2 pi) l_z) at omega_z = 2 pi x 1 kHz, rounded.
+# The value derived from the engine's unit system, g2d_from_nu_z(1000) = lattice_units(omega_z_hz=1000).g2d
+# = 0.0157638 (a_s = 100 a0), is larger by G2D_DEFAULT_OFFSET -- an offset of the same kind as
+# engine.units.EXCEPTIONS, pinned in tests/test_lattice_model.py. Changing the default would move every
+# lattice-model number, so it stays; pass nu_z_hz=... (or g2d=...) for the derived value (`resolve_g2d`).
+G2D_DEFAULT = 0.01576  # E_R a^2
+G2D_DEFAULT_OFFSET = 2.4e-4  # g2d_from_nu_z(1000) / G2D_DEFAULT - 1
+
+
+def g2d_from_nu_z(nu_z_hz: float) -> float:
+    """g2d (E_R a^2) of the fixed-width vertical reduction at the pancake frequency nu_z (Hz):
+    g_3D / (sqrt(2 pi) l_z) with l_z = sqrt(hbar / m omega_z), i.e. g2d ~ sqrt(nu_z), through
+    `engine.units.lattice_units` (a_s = 100 a0)."""
+    return lattice_units(omega_z_hz=float(nu_z_hz)).g2d
+
+
+def resolve_g2d(g2d: float | None, nu_z_hz: float | None) -> tuple[float, str]:
+    """The interaction input of the lattice model: an explicit g2d wins; otherwise nu_z_hz given ->
+    g2d_from_nu_z(nu_z_hz); otherwise the shipped G2D_DEFAULT. Returns (g2d, source) with source
+    "explicit", "nu_z" or "default"."""
+    if g2d is not None:
+        return float(g2d), "explicit"
+    if nu_z_hz is not None:
+        return g2d_from_nu_z(nu_z_hz), "nu_z"
+    return G2D_DEFAULT, "default"
 
 
 # -- sites ------------------------------------------------------------------------------
@@ -385,6 +418,164 @@ def build_interlayer(
     return S, diag, (i, j, delta, vals)
 
 
+# -- the interband shift --------------------------------------------------------------------
+
+
+@dataclass
+class InterbandShift:
+    """The second-order (Schrieffer-Wolff) correction of the lowest-band projection
+    for the coupling of a Wannier function to the other layer's higher bands
+    (`interband_shift`): site energies `onsite` (n_sites,) and intralayer bond
+    corrections `bonds` (a `Bonds`, both layers, images separate), both
+    proportional to Omega_R^2, plus diagnostics."""
+
+    onsite: np.ndarray
+    bonds: Bonds
+    Omega_R: float
+    n_bands: int
+    cutoff: float
+    frame: str
+    denominator: str = "dressed"
+    diagnostics: dict = field(default_factory=dict)
+
+
+def interband_shift(
+    cell: Supercell,
+    V0: float,
+    Omega_R: float,
+    n_bands: int = 6,
+    cutoff: float = 3.0,
+    frame: str = "layer1",
+    bond_tol: float = 1e-12,
+    denominator: str = "dressed",
+) -> InterbandShift:
+    """Omega_R couples the lowest-band Wannier function w_0 of one layer to the
+    higher bands beta of the other layer, which the two-band model drops. Second
+    order in that coupling (Schrieffer-Wolff) gives, for lattice-1 sites i, i',
+
+        H^(2)_{i i'} = -Omega_R^2 sum_{beta != 0} sum_j <w_0i | w_beta j><w_beta j | w_0i'> / (E_beta - E_0),
+
+    (i = i': the site energy eps^(2)_i; i != i': a correction of the intralayer
+    hopping), and the same for lattice-2 sites through lattice 1's higher bands.
+    With separable Wannier functions in the `frame` axes (the approximation of
+    `build_interlayer`), <w_0i | w_beta j> = s_{0 beta_x}(Delta_x') s_{0 beta_y}(Delta_y')
+    (`bands.overlap_bands_1d`), beta = (beta_x, beta_y) over 0..n_bands - 1 except
+    (0, 0), and E_beta - E_0 = (e_{beta_x} - e_0) + (e_{beta_y} - e_0) with the 1D band
+    centres `bands.band_centres_1d` (the q dependence of the intermediate band is
+    neglected: an error of order (bandwidth / gap)^2). Pairs are enumerated as in
+    `_interlayer_pairs` with |Delta_x'|, |Delta_y'| < cutoff (the higher-band Wannier
+    functions are wider than the lowest one; cutoff 3 keeps every overlap above
+    ~1e-4 for beta <= 5), periodic images separately, and the bond correction
+    i -> j -> i' carries the displacement through the intermediate site, so its
+    Peierls phase is right on any cell. Bond entries below bond_tol x max are dropped.
+
+    denominator="dressed" (default) measures the gap from the site's own first-order
+    dressed energy: the lowest-band coupling that the two-band model keeps already
+    lowers site i by about Omega_R S_hyb,i (S_hyb = sqrt(sum_j S_ij^2), 1 at AA), so
+    the intermediate higher-band states are that much further away,
+    D = E_beta - E_0 + Omega_R S_hyb,i (the mean of the two sites for a bond). This
+    is the Brillouin-Wigner choice for the states the correction is applied to; it
+    removes most of the overshoot of the bare denominators ("centre") against the
+    continuum (tests/test_lattice_model.py, 15 Oct: at V0 = 12, Omega_R = 1 on the
+    m = 4 cell the k = 0 level error is 0.081 without the shift, 0.017 with "centre",
+    see the test for "dressed").
+
+    The size: eps^(2) is largest in magnitude at AB (where almost all of a Wannier
+    function's weight lies in the partner's higher bands, `lowest_band_weight_min`)
+    and smallest at AA, so it makes the moire potential shallower by about
+    Omega_R^2 / gap. Diagnostics: the lowest-band weight 1 - w_dropped at AA and AB,
+    the weight captured by n_bands (`bands.band_weight_1d` sums), eps at AA / AB /
+    extremes, and the bond count."""
+    sites1, sites2 = cell.layers
+    c = cell.c
+    i, j, delta, dp = _interlayer_pairs(sites1, sites2, cutoff, frame)
+    XY2 = np.rint((sites1.XY[i] / cell.L + delta) * cell.L).astype(np.int64)  # the actual (unwrapped) partner
+    e = bands.band_centres_1d(V0, n_bands)
+    gaps = e - e[0]
+    # 1D overlap tables s_{0 b}(Delta') for every pair, both axes
+    sx = bands.overlap_bands_1d(V0, dp[:, 0], 0, range(n_bands))  # (n_bands, n_pairs)
+    sy = bands.overlap_bands_1d(V0, dp[:, 1], 0, range(n_bands))
+    # per pair: the vector over beta != (0, 0) of s_beta / sqrt(D_beta), so that H^(2) = -Omega^2 (v . v')
+    betas = [(bx, by) for bx in range(n_bands) for by in range(n_bands) if (bx, by) != (0, 0)]
+    gap_b = np.array([gaps[bx] + gaps[by] for bx, by in betas])[:, None]  # (n_beta, 1)
+    w_lowest = sx[0] ** 2 * sy[0] ** 2  # the pair's weight in the partner's lowest band
+    if denominator == "centre":
+        dress = np.zeros(dp.shape[0])
+    elif denominator == "dressed":
+        s_hyb1 = np.zeros(c)
+        np.add.at(s_hyb1, i, w_lowest)
+        s_hyb2 = np.zeros(c)
+        np.add.at(s_hyb2, j, w_lowest)
+        dress = 0.5 * float(Omega_R) * (np.sqrt(s_hyb1)[i] + np.sqrt(s_hyb2)[j])  # mean of the pair's two sites
+    else:
+        raise ValueError(f"denominator must be 'centre' or 'dressed', got {denominator!r}")
+    v = np.stack([sx[bx] * sy[by] for bx, by in betas]) / np.sqrt(gap_b + dress[None, :])  # (n_beta, n_pairs)
+    w_higher = (v * v * (gap_b + dress[None, :])).sum(axis=0)
+    pref = -(float(Omega_R) ** 2)
+    onsite = np.zeros(2 * c)
+    diag_pair = pref * (v * v).sum(axis=0)
+    np.add.at(onsite, i, diag_pair)
+    np.add.at(onsite, j + c, diag_pair)
+
+    def bonds_from_groups(keys, site_of_pair, offset, sign_disp):
+        """Pairs sharing an intermediate (same key) -> all ordered pairs (a, b), a != b."""
+        order = np.argsort(keys, kind="stable")
+        ks = keys[order]
+        starts = np.flatnonzero(np.r_[True, ks[1:] != ks[:-1]])
+        ends = np.r_[starts[1:], ks.size]
+        rows, cols, amp, disp = [], [], [], []
+        for s0, s1 in zip(starts, ends):
+            if s1 - s0 < 2:
+                continue
+            p = order[s0:s1]
+            A = np.arange(p.size)
+            a, b = np.meshgrid(A, A, indexing="ij")
+            m = a != b
+            a, b = a[m], b[m]
+            rows.append(site_of_pair[p[a]] + offset)
+            cols.append(site_of_pair[p[b]] + offset)
+            amp.append(pref * (v[:, p[a]] * v[:, p[b]]).sum(axis=0))
+            disp.append(sign_disp * (delta[p[a]] - delta[p[b]]))
+        if not rows:
+            return Bonds(np.zeros(0, np.int64), np.zeros(0, np.int64), np.zeros(0), np.zeros((0, 2)))
+        return Bonds(np.concatenate(rows), np.concatenate(cols), np.concatenate(amp), np.concatenate(disp))
+
+    # layer 1: pairs sharing the same actual lattice-2 partner (key = its integer coordinates);
+    # R_a = R'_j - delta_a, so R_b - R_a = delta_a - delta_b
+    key2 = (XY2[:, 0] - XY2[:, 0].min()) * (XY2[:, 1].max() - XY2[:, 1].min() + 1) + (XY2[:, 1] - XY2[:, 1].min())
+    b1 = bonds_from_groups(key2, i, 0, +1.0)
+    # layer 2: pairs sharing the lattice-1 site i (its own position, no images); R'_b - R'_a = delta_b - delta_a
+    b2 = bonds_from_groups(i.astype(np.int64), j, c, -1.0)
+    bonds = Bonds.concat([b1, b2])
+    if bonds.amp.size:
+        keep = np.abs(bonds.amp) >= bond_tol * np.abs(bonds.amp).max()
+        bonds = Bonds(bonds.rows[keep], bonds.cols[keep], bonds.amp[keep], bonds.disp[keep])
+    # diagnostics
+    w_low_site = np.zeros(c)
+    np.add.at(w_low_site, i, w_lowest)
+    w_high_site = np.zeros(c)
+    np.add.at(w_high_site, i, w_higher)
+    aa = cell.origin_index(0)
+    ab = int(np.argmin(w_low_site))
+    diag = {
+        "eps_AA": float(onsite[aa]),
+        "eps_AB": float(onsite[ab]),
+        "eps_min": float(onsite.min()),
+        "eps_max": float(onsite.max()),
+        "eps_per_Omega2_AB": float(onsite[ab] / Omega_R**2) if Omega_R else float("nan"),
+        "lowest_band_weight_AA": float(w_low_site[aa]),
+        "lowest_band_weight_AB": float(w_low_site[ab]),
+        "captured_weight_AA": float(w_low_site[aa] + w_high_site[aa]),
+        "captured_weight_AB": float(w_low_site[ab] + w_high_site[ab]),
+        "gap_first": float(gaps[1]),
+        "n_bond_entries": int(bonds.amp.size),
+        "bond_max": float(np.abs(bonds.amp).max()) if bonds.amp.size else 0.0,
+        "AB_site": ab,
+    }
+    diag["denominator"] = denominator
+    return InterbandShift(onsite, bonds, float(Omega_R), n_bands, float(cutoff), frame, denominator, diag)
+
+
 # -- the model ----------------------------------------------------------------------------
 
 
@@ -416,21 +607,34 @@ def density_overlap_1d(V0: float, d, n_x: int = 64, n_q: int = 64) -> np.ndarray
 
 @dataclass
 class LatticeModel:
+    """A tight-binding model on the sites of the supercell: n_layers x c sites (global index
+    layer * c + site), the off-diagonal part of H0 as `bonds`, its diagonal as `onsite`. The two-layer
+    model of `build_model` has n_layers = 2; the paper's one-layer model (`manybody.paper_model`,
+    variant "paper") has n_layers = 1 and uses the sites of lattice 1 only. Every solver here
+    (`ground_state`, `superfluid_fraction`, `gutzwiller`, `lattice_bands`) takes either."""
+
     cell: Supercell
     V0: float
     Omega_R: float
     delta: float
     J: np.ndarray  # J(d), d = 1..len(J)
     U: float
-    S: sp.csr_matrix  # (c, c) lattice 1 x lattice 2
+    S: sp.csr_matrix  # (c, c) lattice 1 x lattice 2 (empty for one layer)
     bonds: Bonds  # every off-diagonal element of H0, global indices (layer * c + site)
-    onsite: np.ndarray  # (2c,) diagonal of H0
+    onsite: np.ndarray  # (n_layers c,) diagonal of H0
     V_pairs: tuple | None = None  # (i, j, V_ij): interlayer density-density, or None
     diagnostics: dict = field(default_factory=dict)
+    n_layers: int = 2
+    g2d: float | None = None  # the interaction input behind U (None if U was given directly)
+    g2d_source: str = ""  # "explicit", "nu_z", "default" (`resolve_g2d`) or "paper"
+    nu_z_hz: float | None = None  # the pancake frequency behind g2d, if that is how it was given
+    variant: str = "bilayer"  # "bilayer" (`build_model`) or "paper" (`manybody.paper_model`)
+    mu_over_U: float | None = None  # the model's own chemical potential (the paper's mu/U = 1), if any
+    interband: bool = False  # the second-order interband shift is included (`interband_shift`)
 
     @property
     def n_sites(self) -> int:
-        return 2 * self.cell.c
+        return self.n_layers * self.cell.c
 
     @property
     def L(self) -> float:
@@ -439,10 +643,16 @@ class LatticeModel:
     @property
     def coupled(self) -> bool:
         """True if any interlayer bond is present (then only the total phase is a symmetry)."""
-        return bool(np.any((self.bonds.rows < self.cell.c) != (self.bonds.cols < self.cell.c)))
+        c = self.cell.c
+        return bool(np.any((self.bonds.rows // c) != (self.bonds.cols // c)))
+
+    def layer_masks(self) -> list:
+        """One float64 (n_sites,) indicator per layer."""
+        c = self.cell.c
+        return [np.repeat(np.arange(self.n_layers) == k, c).astype(np.float64) for k in range(self.n_layers)]
 
     def hamiltonian(self, theta=(0.0, 0.0)) -> sp.csr_matrix:
-        """Single-particle H0 (2c x 2c CSR), layer 1 first; real at zero twist."""
+        """Single-particle H0 (n_sites x n_sites CSR), layer 1 first; real at zero twist."""
         n = self.n_sites
         return self.bonds.matrix((n, n), theta, self.L) + sp.diags(self.onsite)
 
@@ -483,7 +693,7 @@ def build_model(
     m: int = 22,
     n: int = 1,
     delta: float = 0.0,
-    g2d: float = G2D_DEFAULT,
+    g2d: float | None = None,
     J_list=None,
     d_max: int = 2,
     U: float | None = None,
@@ -491,10 +701,26 @@ def build_model(
     interlayer_interaction: bool = False,
     frame: str = "layer1",
     cell: Supercell | None = None,
+    nu_z_hz: float | None = None,
+    interband: bool = False,
+    interband_n_bands: int = 6,
+    interband_cutoff: float = 3.0,
+    interband_bonds: bool = True,
+    interband_denominator: str = "dressed",
 ) -> LatticeModel:
     """Assemble the two-layer tight-binding model. J_list overrides hopping_1d(V0, d_max) (J1, J2 by
     default); U overrides onsite_U(V0, g2d); frame picks the axes S is
     factorised along (`build_interlayer`).
+
+    The interaction input (`resolve_g2d`): an explicit g2d wins; otherwise nu_z_hz (the pancake
+    frequency in Hz) gives g2d = g2d_from_nu_z(nu_z_hz); otherwise the shipped G2D_DEFAULT. The
+    model records which (`g2d`, `g2d_source`, `nu_z_hz`).
+
+    interband=True adds the second-order interband shift (`interband_shift`: site energies, and
+    with interband_bonds the intralayer bond corrections, from the first interband_n_bands 1D bands
+    with the overlaps cut at interband_cutoff); the model keeps it as `diagnostics["interband"]`.
+    Off by default (docs/manybody.md: its validation against the continuum, and whether to make
+    it the default, is recorded there).
 
     interlayer_interaction=True adds sum_ij V_ij n_i^(1) n_j^(2) with
     V_ij = g2d I2(Delta_x') I2(Delta_y') on the same pairs as S. The two
@@ -504,6 +730,7 @@ def build_model(
     of a layer-symmetric state is half the continuum's."""
     cell = supercell_sites(m, n) if cell is None else cell
     c = cell.c
+    g2d, g2d_source = resolve_g2d(g2d, nu_z_hz)
     J = np.asarray(hopping_1d(V0, d_max) if J_list is None else J_list, dtype=np.float64)
     U = onsite_U(V0, g2d) if U is None else float(U)
     parts = [_hopping_bonds(cell.layers[0], J, 0), _hopping_bonds(cell.layers[1], J, c)]
@@ -513,6 +740,15 @@ def build_model(
         parts.append(Bonds(rows=i, cols=j + c, amp=vals, disp=dlt))
         parts.append(Bonds(rows=j + c, cols=i, amp=vals, disp=-dlt))
     onsite = np.concatenate([np.full(c, 0.5 * delta), np.full(c, -0.5 * delta)])
+    if interband and Omega_R != 0.0:
+        ib = interband_shift(
+            cell, V0, Omega_R, interband_n_bands, interband_cutoff, frame, denominator=interband_denominator
+        )
+        onsite = onsite + ib.onsite
+        if interband_bonds and ib.bonds.amp.size:
+            parts.append(ib.bonds)
+        diag["interband"] = ib.diagnostics
+        diag["interband"]["bonds_included"] = bool(interband_bonds)
     V_pairs = None
     if interlayer_interaction:
         dp = dlt @ _frame_axes(cell.layers[0], frame).T
@@ -530,6 +766,11 @@ def build_model(
         onsite=onsite,
         V_pairs=V_pairs,
         diagnostics=diag,
+        n_layers=2,
+        g2d=g2d,
+        g2d_source=g2d_source,
+        nu_z_hz=None if nu_z_hz is None else float(nu_z_hz),
+        interband=bool(interband),
     )
 
 
@@ -539,8 +780,8 @@ def build_model(
 @dataclass
 class LatticeBands:
     energies: np.ndarray  # (n_bands,), relative to the on-site energy
-    vectors: np.ndarray  # (n_bands, 2, c)
-    weights: np.ndarray  # (n_bands, 2) layer weights
+    vectors: np.ndarray  # (n_bands, n_layers, c)
+    weights: np.ndarray  # (n_bands, n_layers) layer weights
     offset: float  # on-site energy 2 eps_1D (add for absolute energies)
     band_bottom: float  # TB band bottom of one decoupled layer, -4 sum_d J_d
 
@@ -556,12 +797,12 @@ def lattice_bands(
     model: LatticeModel | None = None,
     **model_kw,
 ) -> LatticeBands:
-    """Lowest n_bands eigenpairs of the two-layer tight-binding Hamiltonian on
-    the supercell at twist theta (default k = 0), dense (2c = 970 at m = 22)."""
+    """Lowest n_bands eigenpairs of the tight-binding Hamiltonian on the supercell
+    at twist theta (default k = 0), dense (2c = 970 at m = 22)."""
     model = build_model(V0, Omega_R, m, n, delta, **model_kw) if model is None else model
     E, V = np.linalg.eigh(model.hamiltonian(theta).toarray())
     c = model.cell.c
-    vec = V[:, :n_bands].T.reshape(n_bands, 2, c)
+    vec = V[:, :n_bands].T.reshape(n_bands, model.n_layers, c)
     return LatticeBands(
         energies=E[:n_bands],
         vectors=vec,
@@ -636,8 +877,8 @@ def tb_superfluid_fraction(J_list, theta: float, L: float, alpha: float = 0.0, k
 
 @dataclass
 class LatticeGroundState:
-    phi: torch.Tensor  # (2, c) complex128, sum |phi|^2 = N
-    density: np.ndarray  # (2, c) site occupations |phi_i|^2
+    phi: torch.Tensor  # (n_layers, c) complex128, sum |phi|^2 = N
+    density: np.ndarray  # (n_layers, c) site occupations |phi_i|^2
     N: float
     E_per_N: float  # relative to the on-site energy
     mu: float
@@ -699,7 +940,7 @@ def _initial_phi(model: LatticeModel, theta, N: float) -> torch.Tensor:
     if model.coupled:
         v = lowest(H)
     else:
-        v = np.concatenate([lowest(H[s, s]) for s in (slice(0, c), slice(c, 2 * c))])
+        v = np.concatenate([lowest(H[s, s]) for s in (slice(k * c, (k + 1) * c) for k in range(model.n_layers))])
     v = v * math.sqrt(N) / np.linalg.norm(v)
     return torch.as_tensor(v.astype(np.complex128))
 
@@ -736,8 +977,8 @@ def _linearisation(F: _Functional, phi: torch.Tensor):
     if model.coupled:
         gauge = [torch.cat([-phi.imag, phi.real])]
     else:
-        m1 = torch.cat([torch.ones(c), torch.zeros(c)]).to(torch.float64)
-        gauge = [torch.cat([-phi.imag * mk, phi.real * mk]) for mk in (m1, 1.0 - m1)]
+        masks = [torch.as_tensor(mk) for mk in model.layer_masks()]
+        gauge = [torch.cat([-phi.imag * mk, phi.real * mk]) for mk in masks]
     return Jm, Fv, v1, gauge, dens
 
 
@@ -917,11 +1158,12 @@ def moire_points(cell: Supercell):
 
 
 def local_density(cell: Supercell, density: np.ndarray, point, radius: float = 1.0) -> float:
-    """Total density (atoms per a^2) near a point: for each layer the mean
-    site occupation over its sites within `radius` (minimum image), summed
-    over the two layers."""
+    """Total density (atoms per a^2) near a point: for each layer of `density`
+    ((n_layers, c); layer k on the sites of cell.layers[k]) the mean site
+    occupation over its sites within `radius` (minimum image), summed over
+    the layers."""
     total = 0.0
-    for layer in (0, 1):
+    for layer in range(np.asarray(density).shape[0]):
         d = cell.layers[layer].positions - np.asarray(point)[None, :]
         d -= cell.L * np.round(d / cell.L)
         sel = np.hypot(d[:, 0], d[:, 1]) < radius
@@ -946,7 +1188,7 @@ def ground_state(
     m: int = 22,
     n: int = 1,
     filling: float = 1.0,
-    g2d: float = G2D_DEFAULT,
+    g2d: float | None = None,
     delta: float = 0.0,
     theta=(0.0, 0.0),
     phi0: torch.Tensor | None = None,
@@ -955,6 +1197,7 @@ def ground_state(
     max_rounds: int = 400,
     lbfgs_iter: int = 50,
     history: int = 50,
+    nu_z_hz: float | None = None,
     **model_kw,
 ) -> LatticeGroundState:
     """Mean-field (coherent-state) ground state of the tight-binding model: the discrete
@@ -967,18 +1210,19 @@ def ground_state(
     (complex128, autograd) and polished by Newton to residual
     ||H_mf phi - mu phi|| / ||phi|| < tol, H_mf = H0 + U |phi|^2,
     mu = phi^dag H_mf phi / N. Energies are relative to the on-site energy
-    (`onsite_energy`). model_kw go to `build_model` (e.g. J_list, d_max,
-    interlayer_interaction)."""
+    (`onsite_energy`). g2d / nu_z_hz as in `build_model` (`resolve_g2d`);
+    model_kw go to `build_model` (e.g. J_list, d_max, interlayer_interaction).
+    A one-layer `model` (variant "paper") is solved the same way."""
     if model is None:
-        model = build_model(V0, Omega_R, m, n, delta, g2d=g2d, **model_kw)
+        model = build_model(V0, Omega_R, m, n, delta, g2d=g2d, nu_z_hz=nu_z_hz, **model_kw)
     cell = model.cell
     N = float(filling * cell.c)
     theta = (float(theta[0]), float(theta[1]))
     phi, E, mu, res, its, hmin = _minimise_gpe(model, N, theta, phi0, tol, max_rounds, lbfgs_iter, history)
-    dens = (phi.abs() ** 2).reshape(2, cell.c).numpy()
+    dens = (phi.abs() ** 2).reshape(model.n_layers, cell.c).numpy()
     pr = float(dens.sum() ** 2 / (dens.size * (dens**2).sum()))
     return LatticeGroundState(
-        phi=phi.reshape(2, cell.c),
+        phi=phi.reshape(model.n_layers, cell.c),
         density=dens,
         N=N,
         E_per_N=E / N,
@@ -1015,12 +1259,13 @@ def superfluid_fraction(
     m: int = 22,
     n: int = 1,
     filling: float = 1.0,
-    g2d: float = G2D_DEFAULT,
+    g2d: float | None = None,
     delta: float = 0.0,
     theta: float = 0.3,
     axis: int = 0,
     gs0: LatticeGroundState | None = None,
     tol: float = 1e-11,
+    nu_z_hz: float | None = None,
     **model_kw,
 ) -> dict:
     """f_s along `axis` by phase twist (theta across the box, the continuum
@@ -1028,9 +1273,10 @@ def superfluid_fraction(
     with the continuum's definitions (`engine.observables`):
         energy:  f_s = (E(theta) - E(0)) L^2 / (N kappa theta^2),
         current: f_s = L^2 I / (2 kappa N theta).
+    g2d / nu_z_hz as in `build_model` (`resolve_g2d`).
     Returns {"fs_energy", "fs_current", "E0", "E_theta", "I", "gs0", "gs_theta"}."""
     if gs0 is None:
-        gs0 = ground_state(V0, Omega_R, m, n, filling, g2d, delta, tol=tol, **model_kw)
+        gs0 = ground_state(V0, Omega_R, m, n, filling, g2d, delta, tol=tol, nu_z_hz=nu_z_hz, **model_kw)
     tw = [0.0, 0.0]
     tw[axis] = theta
     gst = ground_state(V0, Omega_R, m, n, filling, g2d, delta, theta=tuple(tw), phi0=gs0.phi, model=gs0.model, tol=tol)
@@ -1053,14 +1299,14 @@ def superfluid_fraction(
 
 @dataclass
 class GutzwillerResult:
-    n: np.ndarray  # (2, c) <n_i>
-    phi: np.ndarray  # (2, c) <b_i>
-    var_n: np.ndarray  # (2, c) number variance
+    n: np.ndarray  # (n_layers, c) <n_i>
+    phi: np.ndarray  # (n_layers, c) <b_i>
+    var_n: np.ndarray  # (n_layers, c) number variance
     mu: float  # from the on-site energy
-    filling: float  # sum <n_i> / c (atoms per a^2, both layers)
+    filling: float  # sum <n_i> / c (atoms per a^2, all layers)
     condensate_fraction: float  # sum |phi|^2 / N
     compressibility: float  # d filling / d mu (1 / (E_R a^2)), central difference
-    grand_potential: float  # per site of both layers
+    grand_potential: float  # per site (all layers)
     converged: bool
     iterations: int
 
@@ -1170,7 +1416,7 @@ def gutzwiller(
     n: int = 1,
     mu_over_U: float | None = None,
     filling: float | None = None,
-    g2d: float = G2D_DEFAULT,
+    g2d: float | None = None,
     delta: float = 0.0,
     n_max: int = 6,
     tol: float = 1e-10,
@@ -1179,6 +1425,7 @@ def gutzwiller(
     dmu_over_U: float = 0.01,
     model: LatticeModel | None = None,
     phi0=None,
+    nu_z_hz: float | None = None,
     **model_kw,
 ) -> GutzwillerResult:
     """Single-site Gutzwiller mean field of the tight-binding model (per-site Fock space
@@ -1186,15 +1433,19 @@ def gutzwiller(
     level like the hopping: Omega_R S_ij phi_j enters site i's field). Give
     exactly one of mu_over_U (grand canonical; mu measured from the on-site
     energy) or `filling` (atoms per a^2 over both layers; mu by a safeguarded
-    regula falsi).
+    regula falsi); with neither, a model that carries its own `mu_over_U`
+    (the paper's model, mu/U = 1) is solved at that value.
+    g2d / nu_z_hz as in `build_model` (`resolve_g2d`).
     Compressibility = d filling / d mu by central difference +- dmu_over_U U.
     On a plain square lattice (Omega_R = 0,
     J_list = (J,)) the n = 1 lobe tip is at U / zJ = 3 + 2 sqrt 2 = 5.83,
     mu / U = sqrt 2 - 1 (the standard single-site mean-field lobe tip)."""
+    if mu_over_U is None and filling is None and model is not None and model.mu_over_U is not None:
+        mu_over_U = model.mu_over_U
     if (mu_over_U is None) == (filling is None):
         raise ValueError("give exactly one of mu_over_U and filling")
     if model is None:
-        model = build_model(V0, Omega_R, m, n, delta, g2d=g2d, **model_kw)
+        model = build_model(V0, Omega_R, m, n, delta, g2d=g2d, nu_z_hz=nu_z_hz, **model_kw)
     c, U = model.cell.c, model.U
     if mixing is None:
         mixing = _default_mixing(model)
@@ -1249,15 +1500,16 @@ def gutzwiller(
     Np = float(solve(mu + dmu, warm(sol))[1].sum())
     Nm = float(solve(mu - dmu, warm(sol))[1].sum())
     Ntot = float(n_avg.sum())
+    nl = model.n_layers
     return GutzwillerResult(
-        n=n_avg.reshape(2, c).numpy(),
-        phi=phi.reshape(2, c).numpy(),
-        var_n=var.reshape(2, c).numpy(),
+        n=n_avg.reshape(nl, c).numpy(),
+        phi=phi.reshape(nl, c).numpy(),
+        var_n=var.reshape(nl, c).numpy(),
         mu=float(mu),
         filling=Ntot / c,
         condensate_fraction=float((phi.abs() ** 2).sum()) / max(Ntot, 1e-300),
         compressibility=(Np - Nm) / (2.0 * dmu * c),
-        grand_potential=omega / (2 * c),
+        grand_potential=omega / model.n_sites,
         converged=conv,
         iterations=its,
     )

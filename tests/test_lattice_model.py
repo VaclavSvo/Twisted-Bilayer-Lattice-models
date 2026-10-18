@@ -250,3 +250,110 @@ def test_gutzwiller_mott_tip_square_lattice():
     assert mi.n == pytest.approx(np.ones_like(mi.n), abs=1e-10)
     assert mi.compressibility == pytest.approx(0.0, abs=1e-8)
     assert mi.condensate_fraction < 1e-14
+
+
+# -- the interaction input: g2d, nu_z_hz, the shipped default -------------------------------
+
+
+def test_g2d_from_nu_z_scaling_precedence_and_default_offset():
+    """U = g2d (int w^4)^2 with g2d = g3d / (sqrt(2 pi) l_z), l_z ~ nu_z^-1/2: U ~ sqrt(nu_z) at fixed V0.
+    Precedence: an explicit g2d wins, then nu_z_hz, then G2D_DEFAULT; the derived 1 kHz value is above
+    the shipped default by the documented 2.4e-4 (an offset of the kind of engine.units.EXCEPTIONS)."""
+    cell = lm.supercell_sites(4, 1)
+    U1 = lm.build_model(V0, 0.0, 4, 1, nu_z_hz=1000.0, cell=cell).U
+    U4 = lm.build_model(V0, 0.0, 4, 1, nu_z_hz=4000.0, cell=cell).U
+    assert U4 / U1 == pytest.approx(2.0, rel=1e-12)
+    assert lm.g2d_from_nu_z(4000.0) / lm.g2d_from_nu_z(1000.0) == pytest.approx(2.0, rel=1e-12)
+    assert lm.g2d_from_nu_z(1000.0) / lm.G2D_DEFAULT - 1.0 == pytest.approx(lm.G2D_DEFAULT_OFFSET, abs=1e-5)
+    assert lm.g2d_from_nu_z(1000.0) == pytest.approx(0.0157638, abs=5e-8)
+    # precedence and the record on the model
+    both = lm.build_model(V0, 0.0, 4, 1, g2d=0.02, nu_z_hz=1000.0, cell=cell)
+    assert both.g2d == 0.02 and both.g2d_source == "explicit" and both.U == pytest.approx(bands.onsite_U(V0, 0.02))
+    nu = lm.build_model(V0, 0.0, 4, 1, nu_z_hz=1000.0, cell=cell)
+    assert nu.g2d_source == "nu_z" and nu.nu_z_hz == 1000.0 and nu.g2d == lm.g2d_from_nu_z(1000.0)
+    default = lm.build_model(V0, 0.0, 4, 1, cell=cell)
+    assert default.g2d == lm.G2D_DEFAULT and default.g2d_source == "default" and default.nu_z_hz is None
+    assert default.U == pytest.approx(bands.onsite_U(V0, lm.G2D_DEFAULT), rel=1e-15)
+    assert lm.resolve_g2d(0.0, 1000.0) == (0.0, "explicit")  # g2d = 0 is explicit, not "absent"
+    assert lm.build_model(V0, 0.0, 4, 1, g2d=0.0, cell=cell).U == 0.0
+    # the solvers pass it through
+    gs = lm.ground_state(V0, 0.0, 4, 1, filling=1.0, nu_z_hz=2000.0)
+    assert gs.model.g2d_source == "nu_z" and gs.model.U == pytest.approx(math.sqrt(2.0) * U1, rel=1e-12)
+    gw = lm.gutzwiller(V0, 0.0, 4, 1, mu_over_U=0.5, nu_z_hz=2000.0, n_max=3)
+    gw2 = lm.gutzwiller(V0, 0.0, 4, 1, mu_over_U=0.5, g2d=lm.g2d_from_nu_z(2000.0), n_max=3)
+    assert gw.converged and gw.mu == gw2.mu and gw.filling == pytest.approx(gw2.filling, rel=1e-12)
+
+
+# -- the interband shift ---------------------------------------------------------------------
+
+
+def test_interband_shift_structure(cell22):
+    """eps^(2) <= 0 everywhere, exactly 0 at AA (the Wannier function there has all its weight in the
+    partner's lowest band) and largest in magnitude towards AB; proportional to Omega_R^2; the bond part
+    is Hermitian, intralayer only, and small against the site part; frame="mid" is layer symmetric."""
+    V0 = 12.0
+    ib = lm.interband_shift(cell22, V0, 1.0, n_bands=4)
+    c = cell22.c
+    assert ib.onsite.shape == (2 * c,) and np.all(ib.onsite <= 1e-15)
+    assert ib.onsite[cell22.origin_index(0)] == pytest.approx(0.0, abs=1e-5)  # the 5 deg rotation of the neighbours
+    assert ib.onsite[c + cell22.origin_index(1)] == pytest.approx(0.0, abs=1e-5)
+    d = ib.diagnostics
+    assert d["lowest_band_weight_AA"] == pytest.approx(1.0, abs=1e-4)
+    assert d["lowest_band_weight_AB"] == pytest.approx(0.0064, abs=5e-4)  # = lowest_band_weight_min at cutoff 1
+    assert -0.12 < d["eps_min"] < -0.07 and d["eps_min"] <= d["eps_AB"] < -0.03  # ~ -Omega_R^2 (1 - w) / gap
+    assert d["denominator"] == "dressed"
+    bare = lm.interband_shift(cell22, V0, 1.0, n_bands=4, denominator="centre")
+    assert np.all(bare.onsite <= ib.onsite + 1e-15) and bare.diagnostics["eps_min"] < d["eps_min"]
+    assert d["gap_first"] == pytest.approx(bands.band_centres_1d(V0, 2)[1] - bands.band_centres_1d(V0, 2)[0])
+    H = ib.bonds.matrix((2 * c, 2 * c)).toarray()
+    assert np.allclose(H, H.T, atol=1e-15) and np.abs(H[:c, c:]).max() == 0.0
+    assert d["bond_max"] < 0.2 * abs(d["eps_min"])
+    assert np.abs(ib.onsite[:c] - ib.onsite[c:]).max() < 0.05 * abs(d["eps_min"])  # layer1 frame: small asymmetry
+    cell4 = lm.supercell_sites(4, 1)
+    ib4 = lm.interband_shift(cell4, V0, 1.0, n_bands=4, denominator="centre")
+    ib4h = lm.interband_shift(cell4, V0, 0.5, n_bands=4, denominator="centre")
+    assert np.allclose(4.0 * ib4h.onsite, ib4.onsite, atol=1e-15) and np.allclose(4.0 * ib4h.bonds.amp, ib4.bonds.amp)
+    # dressed denominators: weaker than Omega_R^2 (the gap grows with the first-order dressing Omega_R S_hyb)
+    dr, drh = lm.interband_shift(cell4, V0, 1.0, n_bands=4), lm.interband_shift(cell4, V0, 0.5, n_bands=4)
+    assert np.all(dr.onsite >= ib4.onsite - 1e-15) and np.all(4.0 * drh.onsite <= dr.onsite + 1e-15)
+    ib4 = dr
+    sym = lm.interband_shift(cell4, V0, 1.0, n_bands=4, frame="mid")
+    assert np.abs(sym.onsite[: cell4.c] - sym.onsite[cell4.c :]).max() < 1e-12
+    assert np.abs(ib4.onsite[: cell4.c] - ib4.onsite[cell4.c :]).max() > 1e-3  # 28 deg: the layer-1 frame is one-sided
+    # the model: off by default, on request the site energies and bonds are added
+    off = lm.build_model(V0, 1.0, 22, 1, cutoff=2.0, cell=cell22)
+    on = lm.build_model(V0, 1.0, 22, 1, cutoff=2.0, cell=cell22, interband=True, interband_n_bands=4)
+    assert not off.interband and "interband" not in off.diagnostics
+    assert on.interband and on.diagnostics["interband"]["bonds_included"]
+    assert np.allclose(on.onsite - off.onsite, ib.onsite) and len(on.bonds) == len(off.bonds) + len(ib.bonds)
+    only = lm.build_model(
+        V0, 1.0, 22, 1, cutoff=2.0, cell=cell22, interband=True, interband_n_bands=4, interband_bonds=False
+    )
+    assert len(only.bonds) == len(off.bonds) and np.allclose(only.onsite, on.onsite)
+    assert lm.build_model(V0, 0.0, 4, 1, cell=cell4, interband=True).onsite.max() == 0.0  # nothing at Omega_R = 0
+
+
+@pytest.mark.parametrize("Omega_R,factor", [(0.2, 10.0), (1.0, 5.0)])
+def test_interband_shift_against_continuum(Omega_R, factor):
+    """The key check of briefing 01 task 4: on the m = 4 cell at V0 = 12 the error of the lowest six
+    k = 0 levels of the two-band model against the continuum (`compare_with_continuum`, `abs_maxdiff`
+    and `spacing_maxdiff`) falls by more than `factor` when the interband shift is added. 15 Oct, with
+    the dressed denominators: 0.081 -> 0.0088 at Omega_R = 1 (a factor 9; the bare band-centre
+    denominators give 0.017, a factor 5), 0.0035 -> 0.0002 at 0.2. The lowest level alone (shift_tb vs
+    shift_cont) is within 2e-3 of the continuum with or without it (the AA pocket, where the shift
+    vanishes); the improvement is in the higher, AB-like levels."""
+    V0, m = 12.0, 4
+    off = lm.compare_with_continuum(V0, Omega_R, m, 1, n_bands=6, points_per_a=16.0, cutoff=2.0)
+    on = lm.compare_with_continuum(V0, Omega_R, m, 1, n_bands=6, points_per_a=16.0, cutoff=2.0, interband=True)
+    assert off["cont_residual"] < 1e-6 and on["cont_residual"] < 1e-6
+    assert off["abs_maxdiff"] > factor * on["abs_maxdiff"]
+    assert off["spacing_maxdiff"] > factor * on["spacing_maxdiff"]
+    assert abs(off["shift_tb"] - off["shift_cont"]) < 2e-3 and abs(on["shift_tb"] - on["shift_cont"]) < 2e-3
+    if Omega_R == 1.0:
+        assert off["abs_maxdiff"] == pytest.approx(0.081, abs=0.005) and on["abs_maxdiff"] == pytest.approx(
+            0.0088, abs=0.002
+        )
+        bare = lm.compare_with_continuum(
+            V0, Omega_R, m, 1, n_bands=6, points_per_a=16.0, cutoff=2.0, interband=True, interband_denominator="centre"
+        )
+        assert bare["abs_maxdiff"] == pytest.approx(0.017, abs=0.003) and bare["abs_maxdiff"] > on["abs_maxdiff"]
