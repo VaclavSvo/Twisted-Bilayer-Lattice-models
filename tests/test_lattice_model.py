@@ -333,6 +333,50 @@ def test_interband_shift_structure(cell22):
     assert lm.build_model(V0, 0.0, 4, 1, cell=cell4, interband=True).onsite.max() == 0.0  # nothing at Omega_R = 0
 
 
+@pytest.mark.parametrize("m,V0_", [(4, 12.0), (8, 8.0)])
+def test_interband_bonds_layer_symmetric_across_the_boundary(m, V0_):
+    """With the layer-symmetric frame the two layers are mirror images, so the second-order shift must
+    give both layers the same bond count per site (as a multiset) and the same spectrum of their block.
+    Both fail if the bonds of pairs whose shared partner lies across the box boundary are dropped in one
+    layer (before the fix: 5712 against 22212 bond entries on m = 4, spectra 8e-3 apart)."""
+    cell = lm.supercell_sites(m, 1)
+    c = cell.c
+    ib = lm.interband_shift(cell, V0_, 1.0, n_bands=4, frame="mid")
+    count = np.bincount(ib.bonds.rows, minlength=2 * c)
+    assert count[:c].sum() == count[c:].sum() > 0
+    assert np.array_equal(np.sort(count[:c]), np.sort(count[c:]))
+    H = ib.bonds.matrix((2 * c, 2 * c)).toarray().real + np.diag(ib.onsite)
+    e1 = np.linalg.eigvalsh(H[:c, :c])
+    e2 = np.linalg.eigvalsh(H[c:, c:])
+    assert np.abs(e1 - e2).max() < 1e-12
+
+
+def test_linearisation_matches_autograd_with_repeated_pairs():
+    """On a small cell the interlayer pair list repeats (i, j) once per periodic image; the Newton
+    Jacobian must accumulate the repeats like the energy does (index_add), so it equals the autograd
+    Jacobian of F(phi) = H_mf phi - mu phi at fixed mu."""
+    model = lm.build_model(V0, 0.5, 3, 1, cutoff=2.0, interlayer_interaction=True)
+    i, j, _ = model.V_pairs
+    pairs = set(zip(i.tolist(), j.tolist()))
+    assert len(pairs) < len(i)  # the cell really has repeated pairs
+    F = lm._Functional(model, (0.0, 0.0))
+    gen = torch.Generator().manual_seed(3)
+    n = model.n_sites
+    phi = torch.complex(
+        torch.rand(n, generator=gen, dtype=torch.float64) + 0.5, 0.3 * torch.rand(n, generator=gen, dtype=torch.float64)
+    )
+    Jm, _, _, _, _ = lm._linearisation(F, phi)
+    _, mu = F.residual(phi)
+
+    def f(x):
+        p = torch.complex(x[:n], x[n:])
+        r = F.mf_apply(p) - mu * p
+        return torch.cat([r.real, r.imag])
+
+    J_ad = torch.autograd.functional.jacobian(f, torch.cat([phi.real, phi.imag]))
+    assert float((Jm - J_ad).abs().max()) < 1e-12
+
+
 @pytest.mark.parametrize("Omega_R,factor", [(0.2, 10.0), (1.0, 5.0)])
 def test_interband_shift_against_continuum(Omega_R, factor):
     """The key check of briefing 01 task 4: on the m = 4 cell at V0 = 12 the error of the lowest six

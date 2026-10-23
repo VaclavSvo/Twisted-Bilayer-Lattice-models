@@ -489,7 +489,6 @@ def interband_shift(
     sites1, sites2 = cell.layers
     c = cell.c
     i, j, delta, dp = _interlayer_pairs(sites1, sites2, cutoff, frame)
-    XY2 = np.rint((sites1.XY[i] / cell.L + delta) * cell.L).astype(np.int64)  # the actual (unwrapped) partner
     e = bands.band_centres_1d(V0, n_bands)
     gaps = e - e[0]
     # 1D overlap tables s_{0 b}(Delta') for every pair, both axes
@@ -540,10 +539,12 @@ def interband_shift(
             return Bonds(np.zeros(0, np.int64), np.zeros(0, np.int64), np.zeros(0), np.zeros((0, 2)))
         return Bonds(np.concatenate(rows), np.concatenate(cols), np.concatenate(amp), np.concatenate(disp))
 
-    # layer 1: pairs sharing the same actual lattice-2 partner (key = its integer coordinates);
-    # R_a = R'_j - delta_a, so R_b - R_a = delta_a - delta_b
-    key2 = (XY2[:, 0] - XY2[:, 0].min()) * (XY2[:, 1].max() - XY2[:, 1].min() + 1) + (XY2[:, 1] - XY2[:, 1].min())
-    b1 = bonds_from_groups(key2, i, 0, +1.0)
+    # layer 1: pairs sharing the same lattice-2 partner j (its wrapped index, as layer 2 groups by i). Two
+    # pairs (a, j) and (b, j) may reach j through different periodic images; the bond then joins a to the
+    # image of b that shares that orbital, at R_b' - R_a = delta_a - delta_b (R_a = R'_j - delta_a), which
+    # is the displacement the Peierls phase needs. Grouping by the unwrapped partner position instead drops
+    # every bond whose shared partner lies across the box boundary.
+    b1 = bonds_from_groups(j.astype(np.int64), i, 0, +1.0)
     # layer 2: pairs sharing the lattice-1 site i (its own position, no images); R'_b - R'_a = delta_b - delta_a
     b2 = bonds_from_groups(i.astype(np.int64), j, c, -1.0)
     bonds = Bonds.concat([b1, b2])
@@ -963,13 +964,16 @@ def _linearisation(F: _Functional, phi: torch.Tensor):
     A = A + torch.diag((2.0 * F.U * dens + hart - mu).to(torch.complex128))
     B = torch.diag(F.U * phi * phi)
     if model.V_pairs is not None:
+        # index_put_ with accumulate: on small cells the pair list holds the same (i, j) once per periodic
+        # image, and the energy (hartree_operator, index_add) counts every image; `A[i, j] += ...` would
+        # keep only one of the repeated entries
         i = torch.as_tensor(model.V_pairs[0])
         j = torch.as_tensor(model.V_pairs[1]) + c
         v = torch.as_tensor(model.V_pairs[2], dtype=torch.float64)
-        A[i, j] += v * phi[i] * phi[j].conj()
-        A[j, i] += v * phi[j] * phi[i].conj()
-        B[i, j] += v * phi[i] * phi[j]
-        B[j, i] += v * phi[j] * phi[i]
+        A.index_put_((i, j), v * phi[i] * phi[j].conj(), accumulate=True)
+        A.index_put_((j, i), v * phi[j] * phi[i].conj(), accumulate=True)
+        B.index_put_((i, j), (v * phi[i] * phi[j]).to(B.dtype), accumulate=True)
+        B.index_put_((j, i), (v * phi[j] * phi[i]).to(B.dtype), accumulate=True)
     Jm = torch.cat(
         [torch.cat([A.real + B.real, -A.imag + B.imag], 1), torch.cat([A.imag + B.imag, A.real - B.real], 1)], 0
     )
