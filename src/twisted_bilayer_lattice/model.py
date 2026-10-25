@@ -54,12 +54,11 @@ superfluid fraction is (J1 + 4 J2)/kappa, not the exact band curvature; see
 function to the other layer's higher bands (the second-order shift ~ -Omega_R^2 /
 gap, largest away from AA, so the moire potential comes out too deep, more so at
 large Omega_R; `interband_shift` computes it and build_model(interband=True) adds
-it, validated against the continuum in tests/test_lattice_model.py and
-docs/manybody.md); inter-site interactions (by default also the interlayer V_ij
-above: without it a layer-symmetric state has half the continuum's mean-field
-interaction and no density dip at AA); and the density between sites (no Leggett
-density suppression of f_s). `compare_with_continuum` checks the k = 0 levels
-against the continuum bands.
+it, validated against the continuum in tests/test_lattice_model.py); inter-site
+interactions (by default also the interlayer V_ij above: without it a layer-symmetric
+state has half the continuum's mean-field interaction and no density dip at AA); and
+the density between sites (no Leggett density suppression of f_s).
+`compare_with_continuum` checks the k = 0 levels against the continuum bands.
 
 Mean-field ground state (`ground_state`): the discrete two-layer GPE (a product
 of coherent states) minimised at fixed N = filling x c (filling = atoms per a^2,
@@ -720,8 +719,7 @@ def build_model(
     interband=True adds the second-order interband shift (`interband_shift`: site energies, and
     with interband_bonds the intralayer bond corrections, from the first interband_n_bands 1D bands
     with the overlaps cut at interband_cutoff); the model keeps it as `diagnostics["interband"]`.
-    Off by default (docs/manybody.md: its validation against the continuum, and whether to make
-    it the default, is recorded there).
+    Off by default; tests/test_lattice_model.py checks it against the continuum k = 0 levels.
 
     interlayer_interaction=True adds sum_ij V_ij n_i^(1) n_j^(2) with
     V_ij = g2d I2(Delta_x') I2(Delta_y') on the same pairs as S. The two
@@ -1029,6 +1027,121 @@ def _hessian_lowest(F: _Functional, phi: torch.Tensor):
     return float(lam[k]), torch.complex(V[:n, k], V[n:, k])
 
 
+def _tangent_eigh(F: _Functional, phi: torch.Tensor):
+    """Eigenpairs of the constrained Hessian on the tangent space of |phi|^2 = N with the gauge
+    direction(s) removed, and the gradient there: (lam, V, g) with g = (Re, Im)(H_mf phi - mu phi).
+    The norm and gauge directions are lifted above the spectrum (P Jm P + s Q Q^T, s > 2 ||Jm||) and
+    dropped, so no zero eigenvalue of the projection is mistaken for a soft mode. A gauge direction of an
+    empty uncoupled layer is zero and is left out (QR would replace it by an arbitrary physical direction)."""
+    n = F.model.n_sites
+    Jm, Fv, v1, gauge, _ = _linearisation(F, phi)
+    gauge = [gv for gv in gauge if float(gv.norm()) > 0.0]
+    Q, _ = torch.linalg.qr(torch.stack([v1] + gauge, 1))
+    P = torch.eye(2 * n, dtype=torch.float64) - Q @ Q.T
+    s = 2.0 * float(Jm.abs().sum(dim=1).max()) + 1.0
+    lam, V = torch.linalg.eigh(P @ Jm @ P + s * (Q @ Q.T))
+    keep = lam < 0.5 * s
+    return lam[keep], V[:, keep], P @ torch.cat([Fv.real, Fv.imag])
+
+
+def _trust_region_subproblem(lam: torch.Tensor, c: torch.Tensor, radius: float):
+    """argmin over |a| <= radius of m(a) = 2 c.a + sum_k lam_k a_k^2 (eigenbasis), Moré-Sorensen:
+    the Newton step if it is a minimum inside the region, else a(s) = -c / (lam + s) with
+    s > max(0, -lam_min) on the boundary, |a(s)| = radius by bisection; in the hard case (c nearly
+    orthogonal to the lowest eigenspace, degenerate to rounding or not) s = -lam_min and the rest of the
+    radius along one mode of it. Returns (a, predicted decrease -m(a) >= 0)."""
+    lmin = float(lam.min())
+    if lmin > 0.0:
+        a = -c / lam
+        if float(a.norm()) <= radius:
+            return a, float(-(2.0 * (c @ a) + (lam * a * a).sum()))
+    lo = max(0.0, -lmin)
+    low = lam <= lmin + 1e-12 * abs(lmin)  # the lowest eigenspace
+    k = int(torch.nonzero(low)[0])
+    a_hard = torch.zeros_like(c)
+    a_hard[~low] = -c[~low] / (lam[~low] + lo)
+    gap = radius**2 - float(a_hard.norm()) ** 2
+    if gap > 0.0 and float(c[low].norm()) <= 1e-12 * float(c.norm()) + 1e-300:
+        a = a_hard
+        a[k] = math.sqrt(gap) * (1.0 if float(c[k]) <= 0.0 else -1.0)
+    else:
+        hi = lo + float(c.norm()) / radius
+        for _ in range(200):
+            mid = 0.5 * (lo + hi)
+            if float((c / (lam + mid)).norm()) > radius:
+                lo = mid
+            else:
+                hi = mid
+            if hi - lo <= 1e-15 * hi:
+                break
+        a = -c / (lam + hi)
+    return a, float(-(2.0 * (c @ a) + (lam * a * a).sum()))
+
+
+def _polar_step(phi: torch.Tensor, dphi: torch.Tensor, sN: float) -> torch.Tensor:
+    """phi + dphi applied in polar form per site, phi (1 + Re q) exp(i Im q) with q = dphi / phi, where
+    |q| <= 1/2 (a plain sum where the site is empty or the step large against it), normalised to sN.
+    Equal to phi + dphi to first order; a rotation of a whole pocket's phase is exact, where the plain sum
+    changes the amplitudes at second order and the stiff modes feel it."""
+    nz = phi.abs() > 0
+    q = dphi / torch.where(nz, phi, torch.ones_like(phi))
+    polar = nz & (q.abs() <= 0.5)
+    cand = torch.where(polar, phi * (1.0 + q.real) * torch.exp(1j * q.imag), phi + dphi)
+    return cand * sN / cand.norm()
+
+
+def _trust_region_polish(F: _Functional, phi: torch.Tensor, N: float, tol: float, max_iter: int = 400):
+    """Riemannian trust-region Newton on |phi|^2 = N, for a state that LBFGS + Newton leave unconverged
+    or on a saddle. Weakly linked moire pockets have inter-pocket phase and population modes with
+    constrained-Hessian eigenvalues ~1e-9 (the stiff ones ~1): a full Newton step along them overshoots
+    by orders of magnitude and lands on another stationary point, and the escape steps of
+    `_minimise_gpe` re-converge to the same saddle. Each step here solves the trust-region subproblem
+    exactly in the eigenbasis of the constrained Hessian (`_tangent_eigh`): minimise
+    2 g.d + d^T Jm d over |d| <= radius (the quadratic model of E on the sphere, Jm = half the Hessian),
+    applies it in polar form (`_polar_step`: the soft modes are pocket phases, and with the plain sum
+    the region stays at ~1e-2 rad per step, hundreds of steps on the m = 22 cell, against ~10 here),
+    and is accepted on the ratio of the actual to the predicted decrease of E (> 0.1); the radius
+    shrinks to a quarter of the step below 0.25 and doubles above 0.75. Where the predicted decrease is
+    below the float64 resolution of E (64 eps max(|E|, N)) a step is accepted when it lowers the
+    residual without raising E. Stops at residual < tol with the lowest eigenvalue > -1e-11 (a local
+    minimum). One dense eigendecomposition (2 n_sites) per step. Returns (phi, E, residual, hmin, steps)."""
+    n = F.model.n_sites
+    sN = math.sqrt(N)
+    phi = phi * sN / phi.norm()
+    E = float(F.energy(phi))
+    res, _ = F.residual(phi)
+    eps_E = 64.0 * 2.220446049250313e-16 * max(abs(E), N)
+    radius = 0.1 * sN
+    lam = None
+    for it in range(max_iter):
+        lam, V, g = _tangent_eigh(F, phi)
+        if res < tol and float(lam.min()) > -1e-11:
+            return phi, E, res, float(lam.min()), it
+        a, pred = _trust_region_subproblem(lam, V.T @ g, radius)
+        d = V @ a
+        cand = _polar_step(phi, torch.complex(d[:n], d[n:]), sN)
+        E_c = float(F.energy(cand))
+        r_c, _ = F.residual(cand)
+        step = float(a.norm())
+        if pred > eps_E:
+            rho = (E - E_c) / pred
+            accept = rho > 0.1
+            if rho < 0.25:
+                radius = 0.25 * step
+            elif rho > 0.75 and step > 0.99 * radius:
+                radius = min(2.0 * radius, sN)
+        else:  # below the energy's resolution: the residual decides
+            accept = E_c <= E + eps_E and r_c < res
+            if not accept:
+                radius = 0.25 * step
+        if accept:
+            phi, E, res = cand, E_c, r_c
+        if not math.isfinite(radius) or radius < 1e-14 * sN:
+            break
+    lam, _, _ = _tangent_eigh(F, phi)
+    return phi, E, res, float(lam.min()), it + 1
+
+
 def _minimise_gpe(
     model: LatticeModel,
     N: float,
@@ -1050,7 +1163,13 @@ def _minimise_gpe(
     on a saddle of the inter-pocket phases, so the result is checked with the
     lowest constrained Hessian eigenvalue and, if negative, pushed downhill
     along that mode and relaxed again. Returns (phi, E, mu, residual,
-    iterations, hessian_min)."""
+    iterations, hessian_min). If after that the residual is still >= tol or the
+    state is still a saddle (hessian_min <= -1e-11), the trust-region polish
+    (`_trust_region_polish`) takes over and its state is kept when it is lower
+    in E (or as low, with a smaller residual or as a converged minimum); a
+    converged minimum never goes through it, so its numbers do not depend on
+    it. Like the Hessian check, it runs only up to stability_max_sites sites
+    (the m = 22 cell has 970)."""
     F = _Functional(model, theta)
     if phi0 is None:
         phi0 = _initial_phi(model, theta, N)
@@ -1140,6 +1259,17 @@ def _minimise_gpe(
             if moved is None:
                 break
             phi = moved
+        r_now, _ = F.residual(phi)
+        if r_now >= tol or hmin <= -1e-11:
+            cand, E_c, r_c, h_c, steps = _trust_region_polish(F, phi, N, tol)
+            n_eval[0] += steps
+            E_now = float(F.energy(phi))
+            eps_E = 64.0 * 2.220446049250313e-16 * max(abs(E_now), N)
+            # a converged minimum as low replaces a state that is not one (also when hmin was that of the
+            # state before a last escape step: the polish then returns that same state with its own hmin)
+            minimum_c = r_c < tol and h_c > -1e-11
+            if E_c < E_now - eps_E or (E_c <= E_now + eps_E and (r_c < r_now or minimum_c)):
+                phi, hmin = cand, h_c
     res, mu = F.residual(phi)
     E = float(F.energy(phi))
     return phi, E, mu, res, n_eval[0], hmin
@@ -1278,7 +1408,26 @@ def superfluid_fraction(
         energy:  f_s = (E(theta) - E(0)) L^2 / (N kappa theta^2),
         current: f_s = L^2 I / (2 kappa N theta).
     g2d / nu_z_hz as in `build_model` (`resolve_g2d`).
-    Returns {"fs_energy", "fs_current", "E0", "E_theta", "I", "gs0", "gs_theta"}."""
+
+    The energy route needs E(0) and E(theta) of the same branch to far better than
+    their difference (f_s = 1e-4 on the m = 22 cell is 1e-6 E_R in E). Two checks:
+      * order: E(theta) below E(0) (beyond 64 eps max(|E|, N)) means the twisted solve
+        found a lower branch than the untwisted one. The untwisted state is then solved
+        again from the twisted one (and the twist again from that), at most twice, each
+        state kept only if it is lower; the same when the untwisted state did not converge
+        to a minimum (residual >= tol or hessian_min <= -1e-11) and the twisted one did,
+        where a converged untwisted state as low (within the slack) is also kept.
+        "fs_retries" counts the rounds, "fs_ordered" is whether the order holds at the
+        end (a negative fs_energy is then not a number).
+      * error: E - E_min <= N r^2 / hmin for a state with residual r near a minimum with
+        lowest constrained-Hessian eigenvalue hmin > 0 (the quadratic model), so
+        fs_error = (N r0^2 / hmin0 + N rt^2 / hmin_t) L^2 / (N kappa theta^2) bounds the
+        error of fs_energy from the two states' convergence: inf if either state has
+        hmin <= 0 (a saddle, or a flat direction the quadratic model cannot bound), nan if
+        the Hessian was not computed (more sites than `_minimise_gpe`'s stability_max_sites).
+    Returns {"fs_energy", "fs_current", "fs_error", "fs_ordered", "fs_retries", "E0",
+    "E_theta", "I", "gs0", "gs_theta"}; "gs0" is the untwisted state used (a re-solved
+    one if a retry found a lower untwisted branch)."""
     if gs0 is None:
         gs0 = ground_state(V0, Omega_R, m, n, filling, g2d, delta, tol=tol, nu_z_hz=nu_z_hz, **model_kw)
     tw = [0.0, 0.0]
@@ -1286,10 +1435,41 @@ def superfluid_fraction(
     gst = ground_state(V0, Omega_R, m, n, filling, g2d, delta, theta=tuple(tw), phi0=gs0.phi, model=gs0.model, tol=tol)
     L, N = gs0.model.L, gs0.N
     E0, Et = gs0.E_per_N * N, gst.E_per_N * N
+    slack = 64.0 * 2.220446049250313e-16 * max(abs(E0), N)
+
+    def minimum(g):  # converged to a local minimum (the Hessian check where it was computed)
+        h = float(g.hessian_min)
+        return float(g.residual) < tol and (math.isnan(h) or h > -1e-11)
+
+    retries = 0
+    while retries < 2 and (Et < E0 - slack or (not minimum(gs0) and minimum(gst))):
+        retries += 1
+        g0 = ground_state(V0, Omega_R, m, n, filling, g2d, delta, phi0=gst.phi, model=gs0.model, tol=tol)
+        E_new = g0.E_per_N * N
+        if not (E_new < E0 - slack or (minimum(g0) and not minimum(gs0) and E_new <= E0 + slack)):
+            break  # no lower (or converged and as low) untwisted state from there
+        gs0, E0 = g0, E_new
+        gt = ground_state(
+            V0, Omega_R, m, n, filling, g2d, delta, theta=tuple(tw), phi0=gs0.phi, model=gs0.model, tol=tol
+        )
+        if gt.E_per_N * N < Et:
+            gst, Et = gt, gt.E_per_N * N
+        else:
+            break  # a second round would start from the same twisted state
+
+    def excess(g):  # bound on E - E_min from the residual and the softest mode
+        h = float(g.hessian_min)
+        if math.isnan(h):
+            return float("nan")
+        return N * float(g.residual) ** 2 / h if h > 0.0 else float("inf")
+
     I = lattice_current(gst, axis)
     return {
         "fs_energy": float(superfluid_fraction_energy(Et, E0, N, L, theta, KAPPA)),
         "fs_current": float(L * L * I / (2.0 * KAPPA * N * theta)),
+        "fs_error": float((excess(gs0) + excess(gst)) * L * L / (N * KAPPA * theta * theta)),
+        "fs_ordered": bool(Et >= E0 - slack),
+        "fs_retries": retries,
         "E0": E0,
         "E_theta": Et,
         "I": I,

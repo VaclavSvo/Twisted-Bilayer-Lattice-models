@@ -2,14 +2,14 @@
 
 Pinned numbers and their sources:
   * the paper's t and U: closed forms (Meng et al. Supplement Eq. 13; Zwerger 2003), evaluated here;
-  * three rows of the audit table (V0 = 4, 10, 16; briefing 01 / roadmap section 0.1, computed from
+  * three rows of the audit table (V0 = 4, 10, 16; `parameters.audit_table`, computed from
     `bands` and the paper's formulas with a_s = 5.29 nm, U at 1 kHz), to 1e-3 relative: that tolerance covers
     the 2.4e-4 between the derived g2d and lattice_model.G2D_DEFAULT;
   * the four depths of the plain-square-lattice Mott transition, 11.1 / 10.0 (paper) and 17.6 / 16.1 (exact
     J1, 1 kHz U) at U/J = 23.31 / 16.74, to 0.05 E_R (same source; the U/J values are gates.references anchors);
   * the sign audit at V0 = 12, Omega_R = 0.5 on the m = 22 cell: cutoff 1 gives 3874 directed interlayer
     entries all of one sign; cutoff 2 gives 15,506 entries, 7752 of the minority sign carrying 1.27 % of the
-    interlayer weight (roadmap section 6); |J2|/J1 = 7.2 % at 4 E_R, 1.2 % at 10, 0.7 % at 12 (`bands`).
+    interlayer weight; |J2|/J1 = 7.2 % at 4 E_R, 1.2 % at 10, 0.7 % at 12 (`bands`).
 """
 
 import math
@@ -23,8 +23,8 @@ from twisted_bilayer.engine import lattice_model as lm
 from twisted_bilayer.gates.references import anchor
 from twisted_bilayer.manybody import parameters as P
 
-# V0: (paper t, paper U, paper U/t, exact J1, J2/J1, U at 1 kHz, U/J1); the briefing's 4-digit table, with
-# the digits of the 15 Oct run where the briefing rounds further
+# V0: (paper t, paper U, paper U/t, exact J1, J2/J1, U at 1 kHz, U/J1); the audit table to 4 digits, with
+# the digits of the 15 Oct run where the table rounds further
 AUDIT_PINS = {
     4.0: (0.11691, 0.18990, 1.624, 0.08549, -0.0719, 0.03515, 0.411),
     10.0: (0.02274, 0.37755, 16.60, 0.01918, -0.0118, 0.06531, 3.404),
@@ -149,10 +149,9 @@ def test_J2_over_J1_by_depth(V0, ratio):
 
 
 def test_occupation_dependent_U():
-    """The NPSE broadening of a site under n atoms (briefing 01 task 7): U_n -> U as n -> 0 (the fixed
-    width), U_n decreases with n, and at the 1 kHz pancake U_2/U_1 = 0.964 at 12 E_R and 0.959 at 16 E_R
-    (15 Oct; a 3.6-4.1 % effect, under the 5 % flag of the briefing), with U_1 itself 4-5 % below the
-    fixed-width U."""
+    """The NPSE broadening of a site under n atoms: U_n -> U as n -> 0 (the fixed width), U_n decreases
+    with n, and at the 1 kHz pancake U_2/U_1 = 0.964 at 12 E_R and 0.959 at 16 E_R (15 Oct; a 3.6-4.1 %
+    effect, under the 0.95 flag of `occupation_dependent_U`), with U_1 itself 4-5 % below the fixed-width U."""
     r = P.occupation_dependent_U(12.0, n_list=(0.001, 1, 2, 3))
     assert r["n"][0]["U_n_over_U"] == pytest.approx(1.0, abs=1e-4)
     assert r["n"][1]["U_n_over_U"] > r["n"][2]["U_n_over_U"] > r["n"][3]["U_n_over_U"]
@@ -183,8 +182,8 @@ def test_sign_audit_with_interband_shift(cell22):
     """The interband site energies are diagonal and change nothing in the sign audit; the interband bond
     corrections are of either sign (about 65 % of their weight positive after the gauge) and at Omega_R = 1
     their largest entry is comparable to J1, so a model with interband_bonds=True is not Monte-Carlo
-    friendly (15 Oct: intralayer frustrated weight 0.70 % -> 26 % at V0 = 12, Omega_R = 1). The design for
-    briefing 05 is the site part only (interband_bonds=False)."""
+    friendly (15 Oct: intralayer frustrated weight 0.70 % -> 26 % at V0 = 12, Omega_R = 1). The Monte Carlo
+    design takes the site part only (interband_bonds=False)."""
     off = P.sign_audit(lm.build_model(12.0, 1.0, 22, 1, cutoff=2.0, cell=cell22))
     sites = P.sign_audit(
         lm.build_model(12.0, 1.0, 22, 1, cutoff=2.0, cell=cell22, interband=True, interband_bonds=False)

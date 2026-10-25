@@ -1,4 +1,4 @@
-"""Parameters of the two-layer Bose-Hubbard Hamiltonian (rung 0), and the audits around them.
+"""Parameters of the two-layer Bose-Hubbard Hamiltonian, and the audits around them.
 
 Everything is in lattice units (a = 1, E_R = 1, hbar = 1) and comes from `engine.bands` (the exact lowest
 band of V0 sin^2(pi x)), `engine.lattice_model` (the supercell and the interlayer overlaps) and
@@ -238,7 +238,7 @@ def format_audit(rows, depths: dict | None = None, nu_z_hz: float = config.NU_Z_
 
 
 def occupation_dependent_U(V0: float, nu_z_hz: float = config.NU_Z_HZ, n_list=(1, 2, 3), n_x: int = 64) -> dict:
-    """An estimate of how much the pancake broadens under n atoms on one site (briefing 01 task 7).
+    """An estimate of how much the pancake broadens under n atoms on one site.
     The fixed-width reduction gives U = g2d (int w^4)^2. With the NPSE width (engine.npse: a local
     Gaussian of width s(n_2D) l_z minimising the energy per area, s^4 - x s - 1 = 0, x = g2d n_2D /
     hbar omega_z) at the local 2D density n_2D(r) = n w(x)^2 w(y)^2 of n atoms in one Wannier orbital, the
@@ -246,8 +246,8 @@ def occupation_dependent_U(V0: float, nu_z_hz: float = config.NU_Z_HZ, n_list=(1
     zero-point cost, e_int -> g2d n_2D^2 / 2 as n_2D -> 0), and U_n = 2 E_int(n) / n^2 is the U that
     reproduces it in (U/2) n^2. Returns U (fixed width), U_n and U_n / U per n, the peak density
     n w(0)^4, the NPSE parameter x at the peak and the peak width s there. A ratio U_2 / U_1 below 0.95
-    means the Mott physics at double occupancy sees a weaker U than the fixed-width model (flag for
-    briefing 02). The sign is set by the broadening alone: no three-body or beyond-mean-field terms."""
+    means the Mott physics at double occupancy sees a weaker U than the fixed-width model (a flag for the
+    Gutzwiller and Monte Carlo solvers). The sign is set by the broadening alone: no three-body or beyond-mean-field terms."""
     import torch
 
     from twisted_bilayer.engine.npse import NPSE2D

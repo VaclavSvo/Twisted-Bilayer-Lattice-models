@@ -1,7 +1,7 @@
 """Beyond mean field on the lattice: the two-layer Bose-Hubbard Hamiltonian of
-`engine.lattice_model` and the methods that solve it (docs/roadmap-beyond-mean-field.md).
+`engine.lattice_model` and the methods that solve it.
 
-Rung 0 (this package so far):
+So far:
   * `parameters`: the Hamiltonian's parameters from the continuum inputs (J(d), U(nu_z), the interlayer
     coupling statistics), the paper's own formulas (t, U), the parameter audit and the square-lattice
     transition depths, and the sign audit for the Monte Carlo;

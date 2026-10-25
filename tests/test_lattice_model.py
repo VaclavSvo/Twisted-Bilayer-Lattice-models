@@ -232,6 +232,124 @@ def test_current_equals_dE_dtheta_and_routes_agree():
     assert r["gs_theta"].residual < 1e-8
 
 
+def test_fs_checks_and_the_retry_on_a_higher_untwisted_branch():
+    """The checks of `superfluid_fraction`: on a converged m = 4 state the order holds, no retry runs and
+    the error bound is at rounding level. Given an untwisted state whose energy is reported too high (the
+    situation of a solve that stopped above the minimum), E(theta) comes out below E(0): the untwisted
+    state is solved again from the twisted one, and f_s is the converged value again (one retry). Given an
+    untwisted state reported as not converged (the twisted one converged), it is solved again in the same
+    way and the converged state as low is kept (one retry, the error bound back at rounding level)."""
+    import dataclasses
+
+    m, Om, theta = 4, 0.24, 0.3
+    r = lm.superfluid_fraction(V0, Om, m, 1, 1.0, theta=theta)
+    assert r["fs_ordered"] and r["fs_retries"] == 0
+    assert 0.0 <= r["fs_error"] < 1e-9
+    gs0 = r["gs0"]
+    raised = dataclasses.replace(gs0, E_per_N=gs0.E_per_N + 1e-3)
+    rr = lm.superfluid_fraction(V0, Om, m, 1, 1.0, theta=theta, gs0=raised)
+    assert rr["fs_retries"] == 1 and rr["fs_ordered"]
+    assert rr["gs0"] is not raised and rr["gs0"].E_per_N < raised.E_per_N
+    assert rr["fs_energy"] == pytest.approx(r["fs_energy"], abs=1e-9)
+    loose = dataclasses.replace(gs0, residual=1.0)
+    rl = lm.superfluid_fraction(V0, Om, m, 1, 1.0, theta=theta, gs0=loose)
+    assert rl["fs_retries"] == 1 and rl["fs_ordered"]
+    assert rl["gs0"] is not loose and rl["gs0"].residual < 1e-11
+    assert 0.0 <= rl["fs_error"] < 1e-9
+    assert rl["fs_energy"] == pytest.approx(r["fs_energy"], abs=1e-9)
+
+
+def test_trust_region_subproblem():
+    """`_trust_region_subproblem` against its definition: the Newton step when it is a minimum inside the
+    region; on the boundary otherwise, with a = -c / (lam + s), s >= max(0, -lam_min), and no other point
+    of the region (sampled) lower in the model; the hard case (no gradient along the negative mode) still
+    reaches the boundary along that mode."""
+    gen = torch.Generator().manual_seed(1)
+    lam = torch.tensor([0.5, 1.0, 2.0, 4.0], dtype=torch.float64)
+    c = torch.tensor([0.1, -0.2, 0.3, 0.05], dtype=torch.float64)
+
+    def model(a):
+        return float(2 * (c @ a) + (lam * a * a).sum())
+
+    a, pred = lm._trust_region_subproblem(lam, c, 10.0)
+    assert torch.allclose(a, -c / lam, rtol=1e-14) and pred == pytest.approx(-model(a), rel=1e-14)
+    for lam_t in (lam, lam - 1.0):  # positive definite, step outside; indefinite
+        lam = lam_t
+        a, pred = lm._trust_region_subproblem(lam, c, 0.1)
+        assert float(a.norm()) == pytest.approx(0.1, rel=1e-10)
+        s = float((-c / a - lam).mean())
+        assert torch.allclose(-c / (lam + s), a, rtol=1e-8) and s >= max(0.0, -float(lam.min())) - 1e-12
+        for _ in range(200):
+            b = torch.randn(4, generator=gen, dtype=torch.float64)
+            b = b * 0.1 * float(torch.rand(1, generator=gen)) ** 0.25 / b.norm()
+            assert model(b) >= model(a) - 1e-14
+    lam = torch.tensor([-1e-3, 1.0, 2.0], dtype=torch.float64)
+    c = torch.tensor([0.0, 1e-3, 0.0], dtype=torch.float64)
+    a, pred = lm._trust_region_subproblem(lam, c, 0.2)
+    assert float(a.norm()) == pytest.approx(0.2, rel=1e-12) and abs(float(a[0])) > 0.19 and pred > 0
+
+
+def test_trust_region_polish_reaches_the_minimum():
+    """From a perturbed m = 4 ground state (phases and amplitudes scrambled by 0.3) and from the saddle
+    of one uncoupled layer filled alone, the trust-region polish ends on a local minimum (residual < tol,
+    lowest constrained Hessian eigenvalue > 0) at the energy of `ground_state`'s solution."""
+    m, Om = 4, 0.6
+    gs = lm.ground_state(V0, Om, m, 1, 1.0)
+    F = lm._Functional(gs.model, (0.0, 0.0))
+    E_ref = gs.E_per_N * gs.N
+    gen = torch.Generator().manual_seed(2)
+    phi = gs.phi.reshape(-1)
+    start = (
+        phi
+        * (1 + 0.3 * torch.randn(phi.shape, generator=gen, dtype=torch.float64))
+        * torch.exp(0.3j * torch.randn(phi.shape, generator=gen, dtype=torch.float64))
+    )
+    p, E, res, hmin, steps = lm._trust_region_polish(F, start, gs.N, 1e-11)
+    assert res < 1e-11 and hmin > 0 and 0 < steps < 400
+    assert E == pytest.approx(E_ref, rel=1e-12)
+    # Omega_R = 0, no interlayer interaction: one layer full and the other empty is stationary, a saddle
+    gs0 = lm.ground_state(V0, 0.0, m, 1, 1.0)
+    F0 = lm._Functional(gs0.model, (0.0, 0.0))
+    lone = gs0.phi.clone()
+    lone[1] = 0.0
+    lone = lone.reshape(-1)
+    assert F0.residual(lone * math.sqrt(gs0.N) / lone.norm())[0] < 1e-12
+    p, E, res, hmin, _ = lm._trust_region_polish(F0, lone + 1e-6 * gs0.phi.reshape(-1), gs0.N, 1e-11)
+    assert res < 1e-11 and hmin > -1e-11 and E == pytest.approx(gs0.E_per_N * gs0.N, rel=1e-12)
+
+
+@pytest.mark.slow
+def test_fs_m22_weak_links():
+    """The bridge's (V0, Omega_R) = (16, 0.6) on the experiment's m = 22 cell, two-band model: the pockets
+    are weakly linked (lowest Hessian eigenvalue ~7e-7) and LBFGS + Newton stopped at residual 5.5e-7
+    with E(0) 4.1e-5 E_R above the minimum, so the twist energy came out negative (f_s = -4.2e-3). With the
+    trust-region polish both states converge (residual < 1e-11, minima) and the energy and current routes
+    agree (2.172e-4 and 2.168e-4, 24 Oct), with an error bound at rounding level."""
+    from twisted_bilayer.manybody.bridge import BridgeSpec
+
+    spec = BridgeSpec()
+    r = lm.superfluid_fraction(
+        16.0,
+        0.6,
+        22,
+        1,
+        1.0,
+        g2d=lm.g2d_from_nu_z(spec.nu_z_hz),
+        theta=spec.theta,
+        tol=spec.tb_tol,
+        cutoff=spec.cutoff,
+        interlayer_interaction=True,
+        frame=spec.frame,
+        interband=False,
+        interband_n_bands=spec.interband_n_bands,
+    )
+    for g in (r["gs0"], r["gs_theta"]):
+        assert g.residual < 1e-11 and g.hessian_min > 0
+    assert r["fs_ordered"] and r["fs_error"] < 1e-9
+    assert r["fs_energy"] == pytest.approx(2.172e-4, rel=2e-3)
+    assert r["fs_current"] == pytest.approx(r["fs_energy"], rel=5e-3)
+
+
 # -- Gutzwiller ------------------------------------------------------------------------------
 
 
@@ -379,7 +497,7 @@ def test_linearisation_matches_autograd_with_repeated_pairs():
 
 @pytest.mark.parametrize("Omega_R,factor", [(0.2, 10.0), (1.0, 5.0)])
 def test_interband_shift_against_continuum(Omega_R, factor):
-    """The key check of briefing 01 task 4: on the m = 4 cell at V0 = 12 the error of the lowest six
+    """The key check of the interband shift: on the m = 4 cell at V0 = 12 the error of the lowest six
     k = 0 levels of the two-band model against the continuum (`compare_with_continuum`, `abs_maxdiff`
     and `spacing_maxdiff`) falls by more than `factor` when the interband shift is added. 15 Oct, with
     the dressed denominators: 0.081 -> 0.0088 at Omega_R = 1 (a factor 9; the bare band-centre
