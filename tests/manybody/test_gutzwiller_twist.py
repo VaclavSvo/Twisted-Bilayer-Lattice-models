@@ -149,6 +149,54 @@ def _fs_fixed_n(model, filling, n_max, theta=0.3, **kw):
     return (Et - E0) * model.L**2 / (s0.N * KAPPA * theta * theta), s0, st
 
 
+def test_solve_with_the_interband_shift_pinned():
+    """`gutzwiller.solve` on the full model with the interband shift of the sites (m = 4, V0 = 12, Omega_R = 0.6),
+    mu = U - Omega_R F_k0_AA (the zero of the paper's M_i), n_max = 6: a regression pin of the shifted model
+    (Omega, N, max |phi|, the sum of the site shifts) that the lowest and the pocket start reach alike. Values
+    measured with this code; any change of the shift, the map or the start shows here."""
+    model = lm.build_model(12.0, 0.6, 4, 1, **FULL)
+    plain = lm.build_model(12.0, 0.6, 4, 1, **dict(FULL, interband=False))
+    shift = np.asarray(model.onsite) - np.asarray(plain.onsite)
+    assert shift.sum() == pytest.approx(-1.005460797923, rel=1e-8)
+    assert shift.max() <= 1e-12  # second-order shifts only lower the sites
+    mu = model.U - 0.6 * model.diagnostics["F_k0_AA"]
+    for phi0 in (None, gw.pocket_start(model)):
+        st = gw.solve(model, mu, 6, tol=1e-12, max_iter=20000, phi0=phi0)
+        assert st.converged
+        assert st.omega == pytest.approx(-0.03687087989835, rel=1e-8)
+        assert st.N == pytest.approx(1.0241893568683, rel=1e-8)
+        assert np.abs(st.phi).max() == pytest.approx(0.71298208264, rel=1e-7)
+        assert st.p_top.max() < 1e-5
+
+
+@pytest.mark.parametrize("V0, Om", [(10.0, 0.2), (12.0, 0.3)])
+def test_fixed_n_fs_route_agrees_with_fixed_mu_route(V0, Om):
+    """The fixed-N twist energy (`gutzwiller_fs0_fixed_n`, one atom per site on the (4, 1) cell) and the fixed-mu
+    route at the filling's mu give the same f_s(theta -> 0) where both are valid: the single-twist values differ
+    at O(theta^2) (here 3e-4 at theta = 0.3), the extrapolated ones to 1e-6 (5e-8 measured)."""
+    model = lm.build_model(V0, Om, 4, 1, **FULL)
+    r = gw.gutzwiller_fs0_fixed_n(model, 1.0, 6, max_iter=20000, tol=1e-10)
+    assert r["converged"]
+    assert r["N"] == pytest.approx(model.cell.c, rel=1e-8)
+    r_mu = gw.gutzwiller_fs0(model, r["mu"], 6, base=r["base"], max_iter=20000, tol=1e-10)
+    assert r_mu["converged"]
+    assert r["fs0"] > 0.05
+    assert r["fs0"] == pytest.approx(r_mu["fs0"], abs=1e-6)
+    assert r["fs0"] == pytest.approx((4 * r["fs"][0.15] - r["fs"][0.3]) / 3, abs=1e-15)
+    assert abs(r["fs"][0.3] - r_mu["fs"][0.3]) < 1e-3
+
+
+def test_fixed_n_fs_of_a_mott_state_is_zero():
+    """Deep Mott state at one atom per site (the paper's model, V0 = 20, M_R = 0, U = 100 t): phi = 0, so no twist
+    energy and f_s = 0 exactly."""
+    pm = paper_model(20.0, 0.0, m=4, n=1)
+    model = dataclasses.replace(pm, U=100.0 * pm.diagnostics["t"])
+    r = gw.gutzwiller_fs0_fixed_n(model, 1.0, 4, max_iter=20000, tol=1e-10)
+    assert r["converged"]
+    assert np.abs(r["base"].phi).max() < 1e-6
+    assert r["fs0"] == pytest.approx(0.0, abs=1e-9)
+
+
 def test_variational_omega_at_convergence():
     """The variational Omega of the converged product state equals the map's Omega (to the solver tolerance),
     at zero and finite twist: the upper bound used for unconverged twisted solves is exact at convergence."""
@@ -174,7 +222,7 @@ def test_plain_square_lattice_fs_u0():
     assert r["fs0"] == pytest.approx(ref, abs=1e-4)
 
 
-def _u0_gate(V0, Om, m, Ufac, fixed_filling):
+def _u0_gate(V0, Om, m, Ufac, fixed_filling, n_max=12):
     J = lm.hopping_1d(V0, 2)
     U = Ufac * J[0]
     model = lm.build_model(V0, Om, m, 1, cutoff=2.0, U=U)
@@ -186,11 +234,11 @@ def _u0_gate(V0, Om, m, Ufac, fixed_filling):
     phi = gs.phi.reshape(-1).numpy()
     kw = dict(max_iter=400000, tol=1e-11)
     if fixed_filling:
-        base = gw.solve_filling(model, 2.0, 12, phi0=phi, **kw)
+        base = gw.solve_filling(model, 2.0, n_max, phi0=phi, **kw)
     else:
-        base = gw.solve(model, gs.mu, 12, phi0=phi, **kw)
+        base = gw.solve(model, gs.mu, n_max, phi0=phi, **kw)
     assert base.converged and base.p_top.max() < 1e-6
-    r = gw.gutzwiller_fs0(model, base.mu, 12, base=base, **kw)
+    r = gw.gutzwiller_fs0(model, base.mu, n_max, base=base, **kw)
     E_gw = (base.omega + base.mu * base.N) / base.N
     return r["fs0"], f_gpe, E_gw, gs.E_per_N, base
 
@@ -215,6 +263,15 @@ def test_u0_vs_discrete_gpe_experiment_cell():
 
 
 @pytest.mark.slow
+def test_fs_u0_vs_discrete_gpe_coupled_nmax16():
+    """Omega_R = 0.05, U = 0.01 J, one atom per site at fixed filling, n_max = 16: f_s(theta -> 0) agrees with the
+    discrete GPE to 5e-5 (2e-5 measured; n_max = 12 differs by 6e-4). The residual is the truncation of the
+    occupation basis in the moire pockets, P(n_max = 12) = 7e-5 (not the pockets themselves)."""
+    f_gw, f_gpe, _, _, _ = _u0_gate(12.0, 0.05, 4, 1e-2, fixed_filling=True, n_max=16)
+    assert f_gw == pytest.approx(f_gpe, abs=5e-5)
+
+
+@pytest.mark.slow
 def test_fixed_filling_energy_vs_discrete_gpe_coupled():
     """Omega_R = 0.05, U = 0.01 J, one atom per site at fixed filling (solve_filling), n_max = 12: the energy per
     atom approaches the discrete GPE to 1e-4 relative. (f_s is not pinned here: at n_max = 12 it differs from
@@ -228,3 +285,34 @@ def test_fixed_filling_energy_vs_discrete_gpe_coupled():
     st = gw.solve_filling(model, 2.0, 12, phi0=gs.phi.reshape(-1).numpy(), max_iter=400000, tol=1e-11)
     assert st.converged
     assert (st.omega + st.mu * st.N) / st.N == pytest.approx(gs.E_per_N, rel=1e-4)
+
+
+def test_fixed_n_route_retries_a_metastable_base_state(monkeypatch):
+    """A twisted energy below the untwisted one means the untwisted state was not the minimum: the fixed-N route
+    solves it again from the lowest twisted state (a quarter of the damping the second time) and quotes the twist
+    energy of the lower state. Stubbed solves: the first base sits at E = 0, the twisted solves find E = -1 (a
+    negative f_s), the retried base sits at E = -1, its twists at E = -1 + 0.5 theta^2."""
+    from types import SimpleNamespace
+
+    model = SimpleNamespace(cell=SimpleNamespace(c=4), L=1.0)
+    calls = []
+
+    def state(E, tag):
+        return SimpleNamespace(omega=E, mu=0.0, N=4.0, converged=True, phi=tag)
+
+    def fake(model_, filling, n_max, theta=(0.0, 0.0), phi0=None, **kw):
+        calls.append((theta, phi0, kw.get("mixing")))
+        if theta == (0.0, 0.0):
+            return state(-1.0, "lower")  # only reached by the retry
+        th = theta[0]
+        return state(-1.0 + (0.5 * th * th if phi0 == "lower" else 0.0), "twisted")
+
+    monkeypatch.setattr(gw, "solve_filling", fake)
+    monkeypatch.setattr(gw, "default_mixing", lambda m: 0.8)
+    r = gw.gutzwiller_fs0_fixed_n(model, 1.0, 6, base=state(0.0, "metastable"))
+    assert r["retries"] == 1 and r["base"].omega == -1.0 and r["converged"]
+    # f(theta) = (0.5 theta^2) L^2 / (N kappa theta^2) = 0.5 / (4 kappa): the same at both twists, so the
+    # extrapolation returns it
+    assert r["fs"][0.3] == pytest.approx(0.5 / (4.0 * gw.KAPPA)) and r["fs0"] == pytest.approx(r["fs"][0.3])
+    retry_call = [c for c in calls if c[0] == (0.0, 0.0)]
+    assert retry_call == [((0.0, 0.0), "twisted", None)]  # from a twisted state, first retry at the default damping

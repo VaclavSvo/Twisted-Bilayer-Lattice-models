@@ -40,6 +40,53 @@ from twisted_bilayer.engine.units import KAPPA
 THETA_FS = (0.3, 0.15)  # the two twists of the theta -> 0 extrapolation (decision of 17 Oct)
 START_NAMES = ("lowest", "pocket", "random1", "random2")
 
+# Largest batch of small symmetric matrices handed to one CUDA `torch.linalg.eigh` call. cuSOLVER's batched
+# eigensolver fails above a size limit that depends on the matrix size, not on the free memory: on a consumer GPU
+# (torch 2.11.0+cu128) 9 x 9 matrices pass up to 29 230 per call (7 x 7: 30 000, 11 x 11: 28 536,
+# 15 x 15: 27 192) and the next one fails, reported as "CUDA out of memory" for a ~16 GiB buffer; the 46 560
+# matrices of one full-model column are above it. No NaN is involved, and the CPU has no such limit. The value
+# is below the limit with a margin and was checked on a full column; `batched_eigh` halves it on a failure, so
+# another card still works. Chunking splits the independent matrices of a batch.
+EIGH_BATCH_MAX = 16384
+_EIGH_MIN_CHUNK = 64
+
+
+def _batch_too_large(exc: RuntimeError) -> bool:
+    """A cuSOLVER batch-size failure: reported as a cuSOLVER error or, as on a consumer GPU, as an out-of-memory."""
+    msg = str(exc).lower()
+    return "cusolver" in msg or "out of memory" in msg
+
+
+def batched_eigh(H: torch.Tensor, chunk: int | None = None):
+    """`torch.linalg.eigh(H)` for H of shape (..., d, d), the leading dimensions flattened into one batch that is
+    cut into pieces of at most `chunk` matrices (default: `EIGH_BATCH_MAX` on a CUDA tensor, no cut on the CPU;
+    0 means no cut). If cuSOLVER still rejects a piece the piece size is halved and the call repeated, down to
+    `_EIGH_MIN_CHUNK` (the failure is a cuSOLVER error or an out-of-memory); any other error is raised. Returns (eigenvalues, eigenvectors) shaped like `eigh`."""
+    if chunk is None:
+        chunk = EIGH_BATCH_MAX if H.is_cuda else 0
+    lead, d = H.shape[:-2], H.shape[-1]
+    flat = H.reshape(-1, d, d)
+    while True:
+        if chunk <= 0 or flat.shape[0] <= chunk:
+            try:
+                e, V = torch.linalg.eigh(flat)
+                break
+            except RuntimeError as exc:
+                if chunk <= 0 or not _batch_too_large(exc) or chunk <= _EIGH_MIN_CHUNK:
+                    raise
+                chunk = max(_EIGH_MIN_CHUNK, chunk // 2)
+                continue
+        try:
+            parts = [torch.linalg.eigh(flat[a : a + chunk]) for a in range(0, flat.shape[0], chunk)]
+            e = torch.cat([p[0] for p in parts])
+            V = torch.cat([p[1] for p in parts])
+            break
+        except RuntimeError as exc:
+            if not _batch_too_large(exc) or chunk <= _EIGH_MIN_CHUNK:
+                raise
+            chunk = max(_EIGH_MIN_CHUNK, chunk // 2)
+    return e.reshape(*lead, d), V.reshape(*lead, d, d)
+
 
 @dataclass
 class GWState:
@@ -234,7 +281,7 @@ def solve_batch(
         H = torch.diag_embed(D.to(dt))
         H[:, :, il, il - 1] = Psi[:, :, None] * sq
         H[:, :, il - 1, il] = Psi.conj()[:, :, None] * sq
-        e, V = torch.linalg.eigh(H)
+        e, V = batched_eigh(H)
         g = V[..., 0]
         p = g.abs() ** 2
         b = (g[..., :-1].conj() * sq * g[..., 1:]).sum(dim=-1)
@@ -469,6 +516,70 @@ def gutzwiller_fs0(model: lm.LatticeModel, mu: float, n_max: int, base: GWState 
     return {"fs0": extrapolate_fs0(r["fs"]), "fs": r["fs"], "converged": r["converged"]}
 
 
+def gutzwiller_fs0_fixed_n(
+    model: lm.LatticeModel,
+    filling: float,
+    n_max: int,
+    base: GWState | None = None,
+    thetas=THETA_FS,
+    axis: int = 0,
+    max_retry: int = 2,
+    **kw,
+) -> dict:
+    """f_s at fixed particle number: the twist energy E(theta) - E(0), E = Omega + mu N, of the states at the same
+    `filling` (`solve_filling` at each twist, warm-started from the untwisted state), theta -> 0 from `thetas`
+    as in `gutzwiller_fs0`. This is the route of the continuum f_s (fixed N), and the reliable one where
+    N(mu) is steep or where a fixed-mu twisted solve can fall to another branch (the fixed-mu energy of a state
+    whose N drifts with the twist is not a twist energy). To second order in theta it equals the fixed-mu route;
+    the two agree to O(theta^4) where both are valid.
+
+    A twisted energy below the untwisted one (by more than 1e-5 in f_s) means the untwisted state was not the
+    minimum at that filling (a metastable state of the superfluid islands: the twisted solve found the lower
+    one). The untwisted state is then solved again from the lowest twisted state, the second time with a quarter of
+    the damping, at most `max_retry` times; a state that is not lower and converged is not accepted.
+
+    Returns {"fs0", "fs", "converged", "N", "mu", "base", "states", "retries"} ("converged": every solve and the
+    filling of every twisted state within 1e-6 relative of the target, and no negative f_s left)."""
+    base = solve_filling(model, filling, n_max, **kw) if base is None else base
+    target = filling * model.cell.c
+
+    def twist_solves(base):
+        E0 = base.omega + base.mu * base.N
+        fs, states = {}, {}
+        ok = bool(base.converged) and abs(base.N - target) <= 1e-6 * target
+        for th in thetas:
+            tw = [0.0, 0.0]
+            tw[axis] = th
+            st = solve_filling(model, filling, n_max, theta=tuple(tw), phi0=base.phi, **kw)
+            fs[th] = fs_from_omegas(model, E0, st.omega + st.mu * st.N, base.N, th)
+            ok = ok and bool(st.converged) and abs(st.N - target) <= 1e-6 * target
+            states[th] = st
+        return E0, fs, states, ok
+
+    E0, fs, states, ok = twist_solves(base)
+    retries = 0
+    while min(fs.values()) < -1e-5 and retries < max_retry:
+        low = states[min(fs, key=fs.get)]
+        kw2 = dict(kw)
+        if retries >= 1:
+            kw2["mixing"] = 0.25 * default_mixing(model)
+        retries += 1
+        b2 = solve_filling(model, filling, n_max, phi0=low.phi, **kw2)
+        if b2.converged and b2.omega + b2.mu * b2.N < E0 - 1e-12 * max(1.0, abs(E0)):
+            base = b2
+            E0, fs, states, ok = twist_solves(base)
+    return {
+        "fs0": extrapolate_fs0(fs, thetas),
+        "fs": fs,
+        "converged": ok and min(fs.values()) >= -1e-5,
+        "N": base.N,
+        "mu": base.mu,
+        "base": base,
+        "states": states,
+        "retries": retries,
+    }
+
+
 # -- fixed filling --------------------------------------------------------------------------------------------------
 
 
@@ -532,6 +643,7 @@ __all__ = [
     "fs_from_omegas",
     "gutzwiller_fs",
     "gutzwiller_fs0",
+    "gutzwiller_fs0_fixed_n",
     "lowest_start",
     "make_start",
     "pocket_start",

@@ -332,7 +332,7 @@ def cluster_gutzwiller(
                     Bp = Bd[p]
                     H += P[sl, p, None, None] * Bp.T[None] + np.conj(P[sl, p])[:, None, None] * Bp[None]
                     H += Hh[sl, p, None, None] * np.diag(fb.N[:, p])[None]
-                e, V = torch.linalg.eigh(torch.as_tensor(H, device=device))
+                e, V = gw.batched_eigh(torch.as_tensor(H, device=device))
                 e, V = e[:, 0].cpu().numpy(), V[:, :, 0].cpu().numpy()
                 for q, k in enumerate(range(sl.start, sl.stop)):
                     vecs[k] = V[q]

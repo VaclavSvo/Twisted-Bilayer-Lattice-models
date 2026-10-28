@@ -200,6 +200,24 @@ LABEL_CODE = {lab: k for k, lab in enumerate(ob.LABELS)}  # SF 0, SF-II 1, I 2, 
 FS_NOISE = 1e-5
 
 
+def twist_verdict(fr: dict, th, f_c: float, noise: float = FS_NOISE):
+    """(negative, bound) for the twisted solves `fr` (a `gutzwiller.fs_batch` / `cluster.cluster_fs` entry).
+
+    negative: an f_s below -noise, from the converged values, or from their variational upper bounds when a
+    twisted solve did not converge (an upper bound below -noise decides f_s < 0 whatever the exact value is).
+    bound: when a twisted solve did not converge and none is negative, the bound on f_s(0), else None:
+    f(0) <= (4/3) f_upper(theta_min) given f(theta_max) >= 0, quoted only if it is below f_c. The assumption
+    f(theta_max) >= 0 is refuted when f_upper(theta_max) < -noise (f_upper >= f), which `negative` then reports and
+    no bound is quoted; it is not decidable when the theta_max solve itself did not converge and f_upper(theta_max)
+    is above -noise, where the bound rests on it. The stored f_upper(theta_max) is `fs_upper_03` in the maps."""
+    vals = fr["fs"] if fr["twist_converged"] else fr["fs_upper"]
+    negative = min(vals.values()) < -noise
+    if fr["twist_converged"] or negative:
+        return negative, None
+    ub = (4.0 / 3.0) * max(fr["fs_upper"][min(th)], 0.0) if len(th) == 2 else fr["fs_upper"][th[0]]
+    return False, (float(ub) if ub < f_c else None)
+
+
 # -- the U correction (only for the labelled row) -------------------------------------------------------------------
 
 
@@ -321,20 +339,16 @@ def solve_points_cluster(row: dict, models: list, device: str = "cpu", log=print
         res.fs_theta = {float(t): float(v) for t, v in fsr["fs"].items()}
         res.fs = float(fsr["fs0"])
         res.fs_route = "twist energy at fixed mu, theta -> 0 from (0.3, 0.15); cluster " + row["family"]
-        neg = (
-            min(fsr["fs"].values()) < -FS_NOISE if fsr["twist_converged"] else min(fsr["fs_upper"].values()) < -FS_NOISE
-        )
+        neg, ub = twist_verdict(fsr, th, row["thresholds"]["f_c"])
         res.converged = bool(best.converged and fsr["converged"] and not neg)
         fs_bound = False
-        if best.converged and not fsr["twist_converged"] and not neg:  # the bound of solve_points
-            ub = (4.0 / 3.0) * max(fsr["fs_upper"][min(th)], 0.0) if len(th) == 2 else fsr["fs_upper"][th[0]]
-            if ub < row["thresholds"]["f_c"]:
-                res.fs = float(ub)
-                res.fs_route = (
-                    "upper bound (twisted solve not converged): (4/3) f_upper(theta = 0.15); cluster " + row["family"]
-                )
-                res.converged = True
-                fs_bound = True
+        if best.converged and ub is not None:  # the bound of solve_points
+            res.fs = ub
+            res.fs_route = (
+                "upper bound (twisted solve not converged): (4/3) f_upper(theta = 0.15); cluster " + row["family"]
+            )
+            res.converged = True
+            fs_bound = True
         res.starts = {s: (st.omega, st.converged, st.iterations) for s, st in sols}
         res.omega_spread = float(max(om) - min(om)) if len(om) > 1 else 0.0
         res.params = {
@@ -396,19 +410,17 @@ def solve_points(row: dict, models: list, device: str = "cpu", log=print) -> lis
             res.fs_theta = {float(t): float(v) for t, v in fr["fs"].items()}
             res.fs = gw.extrapolate_fs0(fr["fs"], th) if len(th) == 2 else float(fr["fs"][th[0]])
             res.fs_route = "twist energy at fixed mu, theta -> 0 from (0.3, 0.15)"
-            neg = min(fr["fs"].values()) < -noise if fr["twist_converged"] else min(fr["fs_upper"].values()) < -noise
+            neg, ub = twist_verdict(fr, th, f_c, noise)
             res.converged = bool(st.converged and fr["converged"] and not neg)
             # twisted solves that did not converge (the soft inter-island phase mode): the variational Omega of
-            # the last iterate bounds f_s from above; f(0) <= (4/3) f_upper(theta_min) given f(theta_max) >= 0.
-            # If that bound is below f_c the label is decided; the bound is quoted as f_s and flagged.
+            # the last iterate bounds f_s from above (see `twist_verdict`). If that bound is below f_c the label is
+            # decided; the bound is quoted as f_s and flagged.
             fs_bound = False
-            if st.converged and not fr["twist_converged"] and not neg:
-                ub = (4.0 / 3.0) * max(fr["fs_upper"][min(th)], 0.0) if len(th) == 2 else fr["fs_upper"][th[0]]
-                if ub < f_c:
-                    res.fs = float(ub)
-                    res.fs_route = "upper bound (twisted solve not converged): (4/3) f_upper(theta = 0.15)"
-                    res.converged = True
-                    fs_bound = True
+            if st.converged and ub is not None:
+                res.fs = ub
+                res.fs_route = "upper bound (twisted solve not converged): (4/3) f_upper(theta = 0.15)"
+                res.converged = True
+                fs_bound = True
             res.starts = info["starts"]
             res.omega_spread = info["omega_spread"]
             res.params = {
@@ -824,6 +836,16 @@ def format_report(name, row, maps, s) -> str:
 
 
 COLORS = {"SF": "#4C78A8", "SF-II": "#72B7B2", "I": "#F58518", "MI": "#E45756", "?": "#9D9D9D", "empty": "#E8DCC4"}
+FS_CLIP = 1e-6  # f_s below this is drawn at the floor of the colour scale
+
+
+def fs_for_plot(maps: dict) -> np.ndarray:
+    """log10 f_s of the finished points for the colour map, shape (n_V0, n_Omega_R): clipped at `FS_CLIP`, and NaN
+    (masked) at the points not run and at the points labelled "?" (undecided: an unconverged or ambiguous f_s
+    drawn at the floor would look like a superfluid island or a deep insulator)."""
+    show = maps["done"] & (maps["label"] != LABEL_CODE["?"])
+    fs = np.where(show, maps["fs"], np.nan)
+    return np.log10(np.clip(fs, FS_CLIP, None))
 
 
 def plot_labels(name, row, maps, path) -> None:
@@ -858,9 +880,19 @@ def plot_labels(name, row, maps, path) -> None:
             iv, io = np.where(flag)
             ax.plot(V0[iv], Om[io], "x", color="k", ms=4)
     ax = axes[-1]
-    fs = np.where(maps["done"], maps["fs"], np.nan).T
-    im = ax.pcolormesh(edges(V0), edges(Om), np.log10(np.clip(fs, 1e-6, None)), cmap="viridis", shading="flat")
-    fig.colorbar(im, ax=ax, label="log10 f_s(theta -> 0)")
+    im = ax.pcolormesh(edges(V0), edges(Om), fs_for_plot(maps).T, cmap="viridis", shading="flat")
+    fig.colorbar(im, ax=ax, label=f"log10 f_s(theta -> 0), clipped at {FS_CLIP:g}")
+    undecided = (maps["done"] & (maps["label"] == LABEL_CODE["?"])).T
+    if undecided.any():  # grey, hatched: the f_s of these points is not a number to read
+        ax.pcolor(
+            edges(V0),
+            edges(Om),
+            np.ma.masked_where(~undecided, np.ones(undecided.shape)),
+            facecolor="#CCCCCC",
+            edgecolor="#777777",
+            linewidth=0.0,
+            hatch="////",
+        )
     ax.set_xlabel("V0 (E_R)")
     ax.set_title("superfluid fraction", fontsize=10)
     from matplotlib.lines import Line2D

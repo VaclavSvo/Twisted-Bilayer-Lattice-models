@@ -1316,6 +1316,20 @@ def aa_ab_ratio(cell: Supercell, density: np.ndarray, radius: float = 1.0) -> fl
     return float(nAA / nAB)
 
 
+def pocket_fraction(cell: Supercell, density: np.ndarray, radius: float = 1.0) -> float:
+    """Fraction of the atoms (both layers of `density`, (n_layers, c)) on sites within `radius` of an AA point
+    (minimum image). Unlike `aa_ab_ratio` it stays finite and well conditioned when the AB density is tiny."""
+    AA, _ = moire_points(cell)
+    density = np.asarray(density)
+    near = 0.0
+    for layer in range(density.shape[0]):
+        d = cell.layers[layer].positions[:, None, :] - AA[None, :, :]
+        d -= cell.L * np.round(d / cell.L)
+        sel = (np.hypot(d[..., 0], d[..., 1]) < radius).any(axis=1)
+        near += float(density[layer][sel].sum())
+    return near / float(density.sum())
+
+
 def ground_state(
     V0: float,
     Omega_R: float,

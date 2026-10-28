@@ -61,6 +61,38 @@ def test_boundary_table():
     assert b["V_c_SF"] == 7.0 and b["first_MI"] == 8.0 and b["first_SF-II"] is None
 
 
+def _fake_maps(row):
+    """A 2 x 2 map: (0, 0) SF with a tiny f_s, (0, 1) undecided "?", (1, 0) SF with f_s 0.3, (1, 1) not run."""
+    nV, nO = len(row["V0"]), len(row["Omega_R"])
+    code = pd.LABEL_CODE
+    label = np.array([[code["SF"], code["?"]], [code["SF"], code["?"]]])
+    return {
+        "done": np.array([[True, True], [True, False]]),
+        "label": label,
+        "label_excl": label,
+        "fs": np.array([[1e-12, 1e-12], [0.3, np.nan]]),
+        "p_nmax": np.zeros((nV, nO)),
+    }
+
+
+def test_undecided_points_are_masked_in_the_fs_panel():
+    """An undecided ("?") point is NaN in the f_s colour map, not drawn at the clip floor; a decided point with a
+    tiny f_s is drawn at the floor; a point not run is NaN."""
+    row = dict(_tiny_row(), V0=(12.0, 20.0), Omega_R=(0.0, 0.6))
+    z = pd.fs_for_plot(_fake_maps(row))
+    assert z.shape == (2, 2)
+    assert z[0, 0] == pytest.approx(np.log10(pd.FS_CLIP))
+    assert np.isnan(z[0, 1]) and np.isnan(z[1, 1])
+    assert z[1, 0] == pytest.approx(np.log10(0.3))
+
+
+def test_label_plot_draws_with_undecided_points(tmp_path):
+    row = dict(_tiny_row(), V0=(12.0, 20.0), Omega_R=(0.0, 0.6))
+    path = str(tmp_path / "labels.png")
+    pd.plot_labels("fake", row, _fake_maps(row), path)
+    assert os.path.getsize(path) > 1000
+
+
 S4C_POINTS = ((10.0, 0.6), (15.0, 0.6), (23.0, 0.3), (23.0, 1.1))
 # The S4c panels. The paper's Fig. S4a puts MI at large V and small Omega_R and I at large V and large Omega_R, so
 # (23, 0.3) is MI and (23, 1.1) is I.
@@ -174,3 +206,31 @@ def test_runner_kind_keeps_both_provenance_files(tmp_path):
     for f in ("maps.npz", "summary.json", "provenance.json", "phase_diagram_provenance.json", "labels.png"):
         assert (out / f).exists(), f
     assert json.loads((out / "phase_diagram_provenance.json").read_text())["runs"]
+
+
+def _twist(fs, upper=None, conv=True):
+    return {"fs": fs, "fs_upper": upper if upper is not None else fs, "twist_converged": conv}
+
+
+def test_upper_bound_rule_assumes_a_non_negative_twist_at_the_larger_angle():
+    """The bound f(0) <= (4/3) f_upper(0.15) rests on f(0.3) >= 0. It is quoted when the twisted solve failed and
+    f_upper(0.3) is not negative; a refuted assumption (f_upper(0.3) below the noise floor) reports a negative f_s and
+    quotes no bound; converged twists never use the bound."""
+    th, f_c = (0.3, 0.15), 1e-3
+    # converged: no bound, only the sign test
+    assert pd.twist_verdict(_twist({0.3: 0.2, 0.15: 0.21}), th, f_c) == (False, None)
+    assert pd.twist_verdict(_twist({0.3: -1e-3, 0.15: 1e-4}), th, f_c) == (True, None)
+    # not converged, assumption intact: (4/3) f_upper(0.15) when below f_c
+    neg, ub = pd.twist_verdict(_twist({0.3: 5.0, 0.15: 5.0}, {0.3: 4e-4, 0.15: 3e-4}, conv=False), th, f_c)
+    assert not neg and ub == pytest.approx(4e-4)
+    # ... and not quoted when it is above f_c
+    assert pd.twist_verdict(_twist({0.3: 5.0, 0.15: 5.0}, {0.3: 2e-3, 0.15: 2e-3}, conv=False), th, f_c) == (
+        False,
+        None,
+    )
+    # not converged, assumption refuted: negative, no bound
+    neg, ub = pd.twist_verdict(_twist({0.3: 5.0, 0.15: 5.0}, {0.3: -2e-4, 0.15: 1e-4}, conv=False), th, f_c)
+    assert neg and ub is None
+    # a small negative f_upper(0.15) is clipped at zero in the bound
+    neg, ub = pd.twist_verdict(_twist({0.3: 5.0, 0.15: 5.0}, {0.3: 1e-4, 0.15: -1e-6}, conv=False), th, f_c)
+    assert not neg and ub == 0.0

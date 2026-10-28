@@ -324,7 +324,7 @@ def test_fs_m22_weak_links():
     are weakly linked (lowest Hessian eigenvalue ~7e-7) and LBFGS + Newton stopped at residual 5.5e-7
     with E(0) 4.1e-5 E_R above the minimum, so the twist energy came out negative (f_s = -4.2e-3). With the
     trust-region polish both states converge (residual < 1e-11, minima) and the energy and current routes
-    agree (2.172e-4 and 2.168e-4, 24 Oct), with an error bound at rounding level."""
+    agree (2.172e-4 and 2.168e-4), with an error bound at rounding level."""
     from twisted_bilayer.manybody.bridge import BridgeSpec
 
     spec = BridgeSpec()
@@ -519,3 +519,39 @@ def test_interband_shift_against_continuum(Omega_R, factor):
             V0, Omega_R, m, 1, n_bands=6, points_per_a=16.0, cutoff=2.0, interband=True, interband_denominator="centre"
         )
         assert bare["abs_maxdiff"] == pytest.approx(0.017, abs=0.003) and bare["abs_maxdiff"] > on["abs_maxdiff"]
+
+
+def test_pocket_fraction(cell22):
+    """The share of the atoms within 1 a of an AA point: 1 for a state confined to those sites, 0 for one confined
+    to the AB points' neighbourhood, the share of the sites for a uniform state, and the continuum version on the
+    engine's grid agrees for a density that is 1 near the AA points and 0 elsewhere."""
+    from twisted_bilayer.manybody import bridge as B
+
+    AA, AB = lm.moire_points(cell22)
+    c = cell22.c
+
+    def near(points):
+        out = []
+        for layer in cell22.layers:
+            d = layer.positions[:, None, :] - points[None, :, :]
+            d -= cell22.L * np.round(d / cell22.L)
+            out.append((np.hypot(d[..., 0], d[..., 1]) < 1.0).any(axis=1))
+        return np.array(out)
+
+    sel_aa = near(AA)
+    assert sel_aa.any() and not (sel_aa & near(AB)).any()
+    assert lm.pocket_fraction(cell22, sel_aa.astype(float)) == pytest.approx(1.0, abs=1e-14)
+    assert lm.pocket_fraction(cell22, near(AB).astype(float)) == pytest.approx(0.0, abs=1e-14)
+    assert lm.pocket_fraction(cell22, np.ones((2, c))) == pytest.approx(sel_aa.sum() / (2 * c), abs=1e-14)
+    N = 176
+    x = (np.arange(N) - N // 2) * (cell22.L / N)
+    X, Y = np.meshgrid(x, x, indexing="ij")
+    dens = np.zeros((N, N))
+    for p in AA:
+        dx = X - p[0]
+        dy = Y - p[1]
+        dx -= cell22.L * np.round(dx / cell22.L)
+        dy -= cell22.L * np.round(dy / cell22.L)
+        dens[dx * dx + dy * dy < 1.0] = 1.0
+    assert B.continuum_pocket_fraction(dens, cell22.L, cell22) == pytest.approx(1.0, abs=1e-14)
+    assert B.continuum_pocket_fraction(1.0 - dens, cell22.L, cell22) == pytest.approx(0.0, abs=1e-14)
