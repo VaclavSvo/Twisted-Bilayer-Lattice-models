@@ -36,6 +36,7 @@ import torch
 
 from twisted_bilayer.engine import lattice_model as lm
 from twisted_bilayer.engine.units import KAPPA
+from twisted_bilayer.manybody import fast_kernels as fk
 
 THETA_FS = (0.3, 0.15)  # the two twists of the theta -> 0 extrapolation (decision of 17 Oct)
 START_NAMES = ("lowest", "pocket", "random1", "random2")
@@ -208,6 +209,8 @@ def solve_batch(
     device: str = "cpu",
     starts=None,
     keep_coeffs: bool = False,
+    eig: str = "exact",
+    kernel_stats: dict | None = None,
 ) -> list:
     """Solve B models of identical structure (`same_structure`) at once: phi as (B, n_sites), amplitudes as
     (B, n_bonds), one batched eigh of shape (B n_sites, n_max + 1, n_max + 1) per iteration over the members
@@ -216,7 +219,15 @@ def solve_batch(
 
     mu: scalar or (B,); theta: one twist (2,) for all or (B, 2); phi0: None (each model's `lowest_start`) or a
     list / (B, n_sites) array; mixing: None (each model's `default_mixing`), a scalar or (B,).
+    eig: the site solver. "exact" (default): the batched dense `eigh` of every site matrix. "fast": the
+    certified warm-started tridiagonal kernel of `fast_kernels` (the gauge-reduced real tridiagonal, Rayleigh-quotient
+    iteration from the previous iteration's ground vector, a Sturm-count and Davis-Kahan certificate, and the same
+    dense `eigh` for every site it does not certify); the first iteration of each solve is solved densely. The fixed
+    point is the same; the coefficients' global phase is not that of `eigh`. kernel_stats: an optional dict that
+    accumulates the kernel's per-reason counters (`fast_kernels.new_stats` keys) over the solve.
     Returns a list of `GWState`."""
+    if eig not in ("exact", "fast"):
+        raise ValueError(f"eig must be 'exact' or 'fast', not {eig!r}")
     models = list(models)
     B = len(models)
     if B == 0:
@@ -263,6 +274,13 @@ def solve_batch(
     sq = torch.sqrt(nn[1:]).to(dt)
     il = torch.arange(1, d, device=dev)
     D0 = 0.5 * Uv[:, None] * nn[None, :] * (nn[None, :] - 1)  # (B, d)
+    if eig == "fast":
+        warm = torch.zeros(B, ns, d, dtype=torch.float64, device=dev)  # gauge-reduced ground vectors, per member
+        warm_ok = torch.zeros(B, dtype=torch.bool, device=dev)
+        if kernel_stats is not None:
+            for key, val in fk.new_stats().items():
+                kernel_stats.setdefault(key, val)
+        kstats = kernel_stats if kernel_stats is not None else fk.new_stats()
 
     def T(x, idx):
         return torch.zeros_like(x).index_add(1, rows, amp[idx] * x[:, cols])
@@ -278,6 +296,20 @@ def solve_batch(
     def site_map(phi, n_avg, idx):
         Psi = T(phi, idx)
         D = D0[idx][:, None, :] + (eps[idx] + hartree(n_avg, idx) - muv[idx][:, None])[:, :, None] * nn
+        if eig == "fast":
+            m = idx.numel()
+            out = fk.ground_state(
+                D.reshape(m * ns, d),
+                Psi.reshape(m * ns),
+                warm=warm[idx].reshape(m * ns, d),
+                warm_valid=warm_ok[idx].repeat_interleave(ns),
+                stats=kstats,
+            )
+            warm[idx] = out["f"].reshape(m, ns, d)
+            warm_ok[idx] = True
+            p = out["p"].reshape(m, ns, d)
+            b = out["b"].reshape(m, ns).to(dt)
+            return b, (p * nn).sum(dim=-1), out["e0"].reshape(m, ns), p, out["g"].reshape(m, ns, d).to(dt)
         H = torch.diag_embed(D.to(dt))
         H[:, :, il, il - 1] = Psi[:, :, None] * sq
         H[:, :, il - 1, il] = Psi.conj()[:, :, None] * sq
