@@ -24,7 +24,7 @@ from twisted_bilayer.gates.references import anchor
 from twisted_bilayer.manybody import parameters as P
 
 # V0: (paper t, paper U, paper U/t, exact J1, J2/J1, U at 1 kHz, U/J1); the audit table to 4 digits, with
-# the digits of the 15 Oct run where the table rounds further
+# the full-precision digits where the table rounds further
 AUDIT_PINS = {
     4.0: (0.11691, 0.18990, 1.624, 0.08549, -0.0719, 0.03515, 0.411),
     10.0: (0.02274, 0.37755, 16.60, 0.01918, -0.0118, 0.06531, 3.404),
@@ -150,7 +150,7 @@ def test_J2_over_J1_by_depth(V0, ratio):
 
 def test_occupation_dependent_U():
     """The NPSE broadening of a site under n atoms: U_n -> U as n -> 0 (the fixed width), U_n decreases
-    with n, and at the 1 kHz pancake U_2/U_1 = 0.964 at 12 E_R and 0.959 at 16 E_R (15 Oct; a 3.6-4.1 %
+    with n, and at the 1 kHz pancake U_2/U_1 = 0.964 at 12 E_R and 0.959 at 16 E_R (a 3.6-4.1 %
     effect, under the 0.95 flag of `occupation_dependent_U`), with U_1 itself 4-5 % below the fixed-width U."""
     r = P.occupation_dependent_U(12.0, n_list=(0.001, 1, 2, 3))
     assert r["n"][0]["U_n_over_U"] == pytest.approx(1.0, abs=1e-4)
@@ -167,7 +167,7 @@ def test_occupation_dependent_U():
 
 def test_bh_parameters_interband_summary(cell22):
     """The interband summary of bh_parameters: eps = 0 at AA, < 0 at AB, the moire depth gets shallower
-    (15 Oct, V0 = 12, Omega_R = 1: by 7 %; eps_AB = -0.061, eps_min = -0.106 E_R), and nothing at Omega_R = 0."""
+    (V0 = 12, Omega_R = 1: by 7 %; eps_AB = -0.061, eps_min = -0.106 E_R), and nothing at Omega_R = 0."""
     b = P.bh_parameters(12.0, Omega_R=1.0, cutoff=2.0, cell=cell22)
     ib = b["interband"]
     assert ib is not None and ib["eps_AA"] == pytest.approx(0.0, abs=1e-5) and ib["eps_AB"] < -0.03
@@ -182,7 +182,7 @@ def test_sign_audit_with_interband_shift(cell22):
     """The interband site energies are diagonal and change nothing in the sign audit; the interband bond
     corrections are of either sign (about 65 % of their weight positive after the gauge) and at Omega_R = 1
     their largest entry is comparable to J1, so a model with interband_bonds=True is not Monte-Carlo
-    friendly (15 Oct: intralayer frustrated weight 0.70 % -> 26 % at V0 = 12, Omega_R = 1). The Monte Carlo
+    friendly (intralayer frustrated weight 0.70 % -> 26 % at V0 = 12, Omega_R = 1). The Monte Carlo
     design takes the site part only (interband_bonds=False)."""
     off = P.sign_audit(lm.build_model(12.0, 1.0, 22, 1, cutoff=2.0, cell=cell22))
     sites = P.sign_audit(

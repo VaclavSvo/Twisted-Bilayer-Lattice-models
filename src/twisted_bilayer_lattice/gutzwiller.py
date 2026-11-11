@@ -38,7 +38,7 @@ from twisted_bilayer.engine import lattice_model as lm
 from twisted_bilayer.engine.units import KAPPA
 from twisted_bilayer.manybody import fast_kernels as fk
 
-THETA_FS = (0.3, 0.15)  # the two twists of the theta -> 0 extrapolation (decision of 17 Oct)
+THETA_FS = (0.3, 0.15)  # the two twists of the theta -> 0 extrapolation
 START_NAMES = ("lowest", "pocket", "random1", "random2")
 
 # Largest batch of small symmetric matrices handed to one CUDA `torch.linalg.eigh` call. cuSOLVER's batched

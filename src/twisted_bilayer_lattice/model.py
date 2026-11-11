@@ -475,7 +475,7 @@ def interband_shift(
     D = E_beta - E_0 + Omega_R S_hyb,i (the mean of the two sites for a bond). This
     is the Brillouin-Wigner choice for the states the correction is applied to; it
     removes most of the overshoot of the bare denominators ("centre") against the
-    continuum (tests/test_lattice_model.py, 15 Oct: at V0 = 12, Omega_R = 1 on the
+    continuum (tests/test_lattice_model.py: at V0 = 12, Omega_R = 1 on the
     m = 4 cell the k = 0 level error is 0.081 without the shift, 0.017 with "centre",
     see the test for "dressed").
 

@@ -499,7 +499,7 @@ def test_linearisation_matches_autograd_with_repeated_pairs():
 def test_interband_shift_against_continuum(Omega_R, factor):
     """The key check of the interband shift: on the m = 4 cell at V0 = 12 the error of the lowest six
     k = 0 levels of the two-band model against the continuum (`compare_with_continuum`, `abs_maxdiff`
-    and `spacing_maxdiff`) falls by more than `factor` when the interband shift is added. 15 Oct, with
+    and `spacing_maxdiff`) falls by more than `factor` when the interband shift is added. With
     the dressed denominators: 0.081 -> 0.0088 at Omega_R = 1 (a factor 9; the bare band-centre
     denominators give 0.017, a factor 5), 0.0035 -> 0.0002 at 0.2. The lowest level alone (shift_tb vs
     shift_cont) is within 2e-3 of the continuum with or without it (the AA pocket, where the shift
