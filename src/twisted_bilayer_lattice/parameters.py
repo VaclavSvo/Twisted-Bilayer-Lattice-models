@@ -1,8 +1,8 @@
 """Parameters of the two-layer Bose-Hubbard Hamiltonian, and the audits around them.
 
-Everything is in lattice units (a = 1, E_R = 1, hbar = 1) and comes from `engine.bands` (the exact lowest
-band of V0 sin^2(pi x)), `engine.lattice_model` (the supercell and the interlayer overlaps) and
-`engine.units` (g2d from the pancake frequency); nothing here holds a physics number of its own.
+Everything is in lattice units (a = 1, E_R = 1, hbar = 1) and comes from `_shared.engine.bands` (the exact lowest
+band of V0 sin^2(pi x)), `model` (the supercell and the interlayer overlaps) and
+`_shared.engine.units` (g2d from the pancake frequency); nothing here holds a physics number of its own.
 
   * `bh_parameters(V0, nu_z_hz, ...)`: the Hamiltonian's J(d), U = g2d (int w^4)^2, U/J1 and the
     interlayer coupling sum_j S_ij at AA and AB (the k = 0 moire potential is -Omega_R sum_j S_ij).
@@ -14,7 +14,7 @@ band of V0 sin^2(pi x)), `engine.lattice_model` (the supercell and the interlaye
     in all three directions (Zwerger, J. Opt. B 5, S9 (2003)); the second is not the 1 kHz pancake's U.
   * `audit_table`, `transition_depths`: the comparison of the two over V0, and the lattice depth of the
     plain-square-lattice n = 1 Mott transition, U/J = 23.31 (single-site mean field) or 16.74 (worm Monte
-    Carlo), with either parameter set (`gates.references.ANCHORS`).
+    Carlo), with either parameter set (`references.ANCHORS`).
   * `sign_audit(model)`: the off-diagonal weight of H0 that a bosonic Monte Carlo cannot make negative by the
     gauge c -> -c on layer 2 (J2 < 0 bonds; interlayer pairs with S < 0).
 
@@ -28,11 +28,11 @@ import math
 import numpy as np
 from scipy.optimize import brentq
 
-from twisted_bilayer import config
-from twisted_bilayer.engine import bands
-from twisted_bilayer.engine import lattice_model as lm
-from twisted_bilayer.engine.units import lattice_units
-from twisted_bilayer.gates.references import anchor
+from twisted_bilayer_lattice import model as lm
+from twisted_bilayer_lattice._shared import config
+from twisted_bilayer_lattice._shared.engine import bands
+from twisted_bilayer_lattice._shared.engine.units import lattice_units
+from twisted_bilayer_lattice.references import anchor
 
 UJ_C = {
     "gutzwiller": anchor("square_lattice_UJ_c_gutzwiller")[0],  # z (3 + 2 sqrt 2) = 23.31
@@ -65,12 +65,12 @@ def bh_parameters(
     interband_n_bands: int = 6,
 ) -> dict:
     """The two-layer Bose-Hubbard parameters at depth V0 and pancake frequency nu_z (Hz): J(d) for
-    d = 1..d_max (`bands.hopping_1d`), U = onsite_U(V0, g2d) with g2d = `lattice_model.g2d_from_nu_z`
+    d = 1..d_max (`bands.hopping_1d`), U = onsite_U(V0, g2d) with g2d = `model.g2d_from_nu_z`
     (U ~ sqrt(nu_z)), U/J1, and the interlayer coupling on the (m, n) supercell with the overlap S cut at
-    |d'| < cutoff (`lattice_model.build_interlayer`): sum_j S_ij at AA (= 1 + the images within the
+    |d'| < cutoff (`model.build_interlayer`): sum_j S_ij at AA (= 1 + the images within the
     cutoff) and at AB, so that the k = 0 moire potential is -Omega_R sum_j S_ij and its depth
     Omega_R (S_sum_AA - S_sum_AB). With interband (and Omega_R != 0) the summary of the second-order
-    interband shift (`lattice_model.interband_shift`): eps^(2) at AA and AB, its extremes, per Omega_R^2,
+    interband shift (`model.interband_shift`): eps^(2) at AA and AB, its extremes, per Omega_R^2,
     and the moire depth with it, Omega_R (S_sum_AA - S_sum_AB) + (eps_AB - eps_AA) (shallower: eps_AB < eps_AA = 0),
     as "moire_depth_with_shift" and the relative change."""
     V0 = float(V0)
@@ -204,7 +204,7 @@ def format_audit(rows, depths: dict | None = None, nu_z_hz: float = config.NU_Z_
         f"U = sqrt(8/pi) k a_s V0^3/4 (3D cubic lattice), a_s = {config.A_S_M * 1e9:.2f} nm.",
         f"Exact: J1, J2 of the lowest band; U = g2d (int w^4)^2 at nu_z = {nu_z_hz:g} Hz "
         f"(l_z = {u.l_z:.4f} a, hbar omega_z = {u.omega_z:.4f} E_R, g2d = {u.g2d:.7f} E_R a^2 derived, "
-        f"lattice_model.G2D_DEFAULT = {lm.G2D_DEFAULT} is {lm.G2D_DEFAULT_OFFSET:.1e} below).",
+        f"model.G2D_DEFAULT = {lm.G2D_DEFAULT} is {lm.G2D_DEFAULT_OFFSET:.1e} below).",
         "",
         f"{'V0':>4s} {'paper t':>9s} {'paper U':>9s} {'paper U/t':>10s} {'exact J1':>9s} {'J2/J1':>8s} "
         f"{'U(nu_z)':>9s} {'U/J1':>8s}",
@@ -232,52 +232,6 @@ def format_audit(rows, depths: dict | None = None, nu_z_hz: float = config.NU_Z_
         f"{q['Omega_R_from_quoted_ratio_2.07']:.3f} E_R.",
     ]
     return "\n".join(lines)
-
-
-# -- the occupation-dependent U (report only) --------------------------------------------------
-
-
-def occupation_dependent_U(V0: float, nu_z_hz: float = config.NU_Z_HZ, n_list=(1, 2, 3), n_x: int = 64) -> dict:
-    """An estimate of how much the pancake broadens under n atoms on one site.
-    The fixed-width reduction gives U = g2d (int w^4)^2. With the NPSE width (engine.npse: a local
-    Gaussian of width s(n_2D) l_z minimising the energy per area, s^4 - x s - 1 = 0, x = g2d n_2D /
-    hbar omega_z) at the local 2D density n_2D(r) = n w(x)^2 w(y)^2 of n atoms in one Wannier orbital, the
-    mean-field interaction energy is E_int(n) = int e_int(n_2D(r)) d^2r (e_int includes the width's
-    zero-point cost, e_int -> g2d n_2D^2 / 2 as n_2D -> 0), and U_n = 2 E_int(n) / n^2 is the U that
-    reproduces it in (U/2) n^2. Returns U (fixed width), U_n and U_n / U per n, the peak density
-    n w(0)^4, the NPSE parameter x at the peak and the peak width s there. A ratio U_2 / U_1 below 0.95
-    means the Mott physics at double occupancy sees a weaker U than the fixed-width model (a flag for the
-    Gutzwiller and Monte Carlo solvers). The sign is set by the broadening alone: no three-body or beyond-mean-field terms."""
-    import torch
-
-    from twisted_bilayer.engine.npse import NPSE2D
-
-    units = lattice_units(omega_z_hz=nu_z_hz)
-    x, w = bands.wannier_1d(V0, n_x=n_x, n_sites=8)
-    dx = x[1] - x[0]
-    w2 = w * w
-    dens1 = w2[:, None] * w2[None, :]  # one atom: the 2D density on the (x, y) grid, int = 1
-    npse = NPSE2D(units.g2d, units.omega_z)
-    U_fixed = bands.onsite_U(V0, units.g2d)
-    out = {
-        "V0": float(V0),
-        "nu_z_hz": float(nu_z_hz),
-        "U_fixed": U_fixed,
-        "peak_density_1": float(dens1.max()),
-        "n": {},
-    }
-    for n in n_list:
-        d = torch.as_tensor(n * dens1, dtype=torch.float64)
-        E_int = float(npse.e_int(d).sum()) * dx * dx
-        U_n = 2.0 * E_int / n**2
-        out["n"][int(n)] = {
-            "U_n": U_n,
-            "U_n_over_U": U_n / U_fixed,
-            "x_peak": float(units.g2d * n * dens1.max() / units.omega_z),
-            "s_peak": float(npse.width(d).max()),
-        }
-    out["U2_over_U1"] = out["n"][2]["U_n"] / out["n"][1]["U_n"] if 1 in out["n"] and 2 in out["n"] else None
-    return out
 
 
 # -- the sign audit ---------------------------------------------------------------------------

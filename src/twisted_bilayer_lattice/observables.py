@@ -13,7 +13,7 @@ coherence is not imaged and each layer is computed on its own):
              + sum_{(i, j) in l, i != j} rho^conn_ij e^{i k.(R_i - R_j)},
 
 with w_l the Fourier transform of the layer's Wannier function, separable along the layer's own axes,
-w_l(k) = w1(k.e1) w1(k.e2), w1 from `engine.bands.wannier_1d`. The sums are evaluated directly at the k
+w_l(k) = w1(k.e1) w1(k.e2), w1 from `_shared.engine.bands.wannier_1d`. The sums are evaluated directly at the k
 points needed (the sites of the two rotated layers are not on one grid).
 
 Visibilities (Gerbier et al., PRA 72, 053606 (2005)), per layer:
@@ -53,8 +53,8 @@ from functools import lru_cache
 
 import numpy as np
 
-from twisted_bilayer.engine import bands
-from twisted_bilayer.engine import lattice_model as lm
+from twisted_bilayer_lattice import model as lm
+from twisted_bilayer_lattice._shared.engine import bands
 
 THRESHOLDS = {"f_c": 1e-3, "phi_c": 1e-4, "c_c": 1e-2}
 LABELS = ("SF", "SF-II", "I", "MI", "?", "empty")  # codes 0-5 in the maps; "empty" appended last
@@ -97,7 +97,7 @@ class ManyBodyResult:
 
 
 def from_state(model: lm.LatticeModel, st, method: str = "gutzwiller", n_max: int = -1, **extra) -> ManyBodyResult:
-    """A `ManyBodyResult` from a `manybody.gutzwiller.GWState` (or anything with phi, n, var_n, p_top, omega,
+    """A `ManyBodyResult` from a `gutzwiller.GWState` (or anything with phi, n, var_n, p_top, omega,
     mu, converged, iterations)."""
     nl, c = model.n_layers, model.cell.c
     N = float(np.sum(st.n))

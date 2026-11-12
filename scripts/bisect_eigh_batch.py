@@ -1,7 +1,7 @@
 """Bisect the largest batch of small symmetric matrices that torch.linalg.eigh accepts on the CUDA device.
 
 cuSOLVER's batched eigensolver rejected 46 560 matrices of 9 x 9 (a consumer GPU, torch 2.11.0+cu128), which is what
-`manybody.gutzwiller.EIGH_BATCH_MAX` guards against. This finds the limit per matrix size, so the constant can be
+`gutzwiller.EIGH_BATCH_MAX` guards against. This finds the limit per matrix size, so the constant can be
 set below it. Standalone: needs only torch.
 
     python scripts/bisect_eigh_batch.py

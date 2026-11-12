@@ -1,7 +1,7 @@
-"""The twisted, batched single-site Gutzwiller solver (manybody/gutzwiller.py) and its gates. `n_max` is
+"""The twisted, batched single-site Gutzwiller solver (gutzwiller.py) and its gates. `n_max` is
 passed explicitly everywhere.
 
-Cross-checks against the discrete lattice GPE (`lattice_model.ground_state`) run on m = 22 (slow) and on the
+Cross-checks against the discrete lattice GPE (`model.ground_state`) run on m = 22 (slow) and on the
 (4, 1) cell only after asserting that its interlayer pair list has no duplicate pairs at cutoff 2 (small cells
 can carry periodic-image duplicates; (4, 1) at cutoff 2 does not)."""
 
@@ -11,10 +11,10 @@ import math
 import numpy as np
 import pytest
 
-from twisted_bilayer.engine import lattice_model as lm
-from twisted_bilayer.engine.units import KAPPA
-from twisted_bilayer.manybody import gutzwiller as gw
-from twisted_bilayer.manybody.paper_model import M_R_from_Omega, paper_model
+from twisted_bilayer_lattice import gutzwiller as gw
+from twisted_bilayer_lattice import model as lm
+from twisted_bilayer_lattice._shared.engine.units import KAPPA
+from twisted_bilayer_lattice.paper_model import M_R_from_Omega, paper_model
 
 FULL = dict(nu_z_hz=1000.0, cutoff=2.0, interlayer_interaction=True, interband=True, interband_bonds=False)
 

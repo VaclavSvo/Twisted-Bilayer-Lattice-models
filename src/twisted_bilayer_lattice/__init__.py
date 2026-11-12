@@ -1,14 +1,16 @@
-"""Beyond mean field on the lattice: the two-layer Bose-Hubbard Hamiltonian of
-`engine.lattice_model` and the methods that solve it.
+"""twisted_bilayer_lattice: lattice (Bose-Hubbard) models of a Bose-Einstein condensate in twisted-bilayer
+optical lattices (the experiment of Meng et al., Nature 615, 231 (2023)).
 
-So far:
-  * `parameters`: the Hamiltonian's parameters from the continuum inputs (J(d), U(nu_z), the interlayer
-    coupling statistics), the paper's own formulas (t, U), the parameter audit and the square-lattice
-    transition depths, and the sign audit for the Monte Carlo;
-  * `paper_model`: the paper's one-layer model (Supplement Eqs. 12-13) as a `LatticeModel`, variant "paper";
-  * `bridge`: the lattice mean field against the continuum GPE on the same cell (scenario kind `bridge`).
+Modules: `model` (the two-layer Bose-Hubbard model on the commensurate supercell and its mean field, the
+discrete GPE), `parameters` (the Hamiltonian's parameters, the paper's formulas, the parameter and sign audits),
+`paper_model` (the paper's one-layer model), `gutzwiller` (single-site Gutzwiller) with `fast_kernels`, `cluster`
+(cluster Gutzwiller), `observables` (momentum distribution, visibilities, phase labels), `phase_diagram` (phase
+maps over V0 and Omega_R), `references` (reference values). Command line: `twisted-bilayer-lattice` (`cli`).
+
+`_shared` holds copies of the single-particle and bookkeeping modules of the Gross-Pitaevskii package
+`twisted_bilayer` (inputs, derived constants, units, 1D bands, the moire geometry, run records), so this package
+runs without it. Nothing is imported here: the device is chosen when `_shared.engine.backend` is first imported,
+and the command line decides before that whether a run must stay on the CPU.
 """
 
-from . import bridge, paper_model, parameters
-
-__all__ = ["bridge", "paper_model", "parameters"]
+__version__ = "0.3.0"

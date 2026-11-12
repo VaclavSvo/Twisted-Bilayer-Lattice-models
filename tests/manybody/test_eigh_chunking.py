@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import torch
 
-from twisted_bilayer.manybody import gutzwiller as gw
+from twisted_bilayer_lattice import gutzwiller as gw
 
 
 def _batch(shape, d, dtype=torch.float64, seed=3):
@@ -90,7 +90,7 @@ def test_batch_error_below_the_minimum_chunk_is_raised(monkeypatch):
 def test_solve_batch_with_forced_chunking_is_bitwise(monkeypatch):
     """The whole batched solver with a tiny chunk gives the same state as the default (the constant is only a
     size limit for CUDA)."""
-    from twisted_bilayer.engine import lattice_model as lm
+    from twisted_bilayer_lattice import model as lm
 
     model = lm.build_model(10.0, 0.3, 4, 1, nu_z_hz=1000.0, cutoff=2.0, interband=True, interband_bonds=False)
     ref = gw.solve_batch([model], [0.9 * model.U], 4, tol=1e-9)[0]

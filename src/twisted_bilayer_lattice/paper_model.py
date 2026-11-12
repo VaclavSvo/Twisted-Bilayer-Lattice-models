@@ -1,5 +1,5 @@
 """The paper's own lattice model (Meng et al., Nature 615, 231 (2023), Supplement section IV,
-Eqs. 12-13) as a one-layer `engine.lattice_model.LatticeModel`, variant "paper":
+Eqs. 12-13) as a one-layer `model.LatticeModel`, variant "paper":
 
     H = -t sum_<ij> b_i^dag b_j + (U/2) sum_i n_i (n_i - 1) + sum_i (M_i - mu) n_i,
 
@@ -34,8 +34,8 @@ import math
 import numpy as np
 import scipy.sparse as sp
 
-from twisted_bilayer import config
-from twisted_bilayer.engine import lattice_model as lm
+from twisted_bilayer_lattice import model as lm
+from twisted_bilayer_lattice._shared import config
 
 from .parameters import paper_parameters
 

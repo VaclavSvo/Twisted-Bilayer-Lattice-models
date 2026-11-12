@@ -1,4 +1,4 @@
-"""The certified tridiagonal kernel of `manybody/fast_kernels.py` against dense `eigh`: random unreduced
+"""The certified tridiagonal kernel of `fast_kernels.py` against dense `eigh`: random unreduced
 tridiagonals from warm, cold and random starts; the complex gauge identity with the site matrix of `solve_batch`;
 excited warm starts; near-degeneracy; diagonal sites and ties; the pivot guard."""
 
@@ -7,7 +7,7 @@ import math
 import pytest
 import torch
 
-from twisted_bilayer.manybody import fast_kernels as fk
+from twisted_bilayer_lattice import fast_kernels as fk
 
 DT = torch.float64
 LADDER = (1e-5, 1e-4, 1e-3, 1e-2, 1e-1)

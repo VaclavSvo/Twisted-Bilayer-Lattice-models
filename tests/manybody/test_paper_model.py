@@ -1,5 +1,5 @@
-"""manybody.paper_model: the paper's one-layer model (Supplement Eqs. 12-13) as a one-layer LatticeModel,
-and the solvers of engine.lattice_model on it.
+"""paper_model: the paper's one-layer model (Supplement Eqs. 12-13) as a one-layer LatticeModel,
+and the solvers of model on it.
 
 Pinned: c = m^2 + n^2 sites and coordination 4 (exact); M_i against Eq. 12 evaluated directly at three sites
 and the exact rational cos theta, sin theta; t and U equal `parameters.paper_parameters`; the atomic limit of
@@ -13,9 +13,9 @@ import math
 import numpy as np
 import pytest
 
-from twisted_bilayer.engine import lattice_model as lm
-from twisted_bilayer.manybody import paper_model as pm
-from twisted_bilayer.manybody import parameters as P
+from twisted_bilayer_lattice import model as lm
+from twisted_bilayer_lattice import paper_model as pm
+from twisted_bilayer_lattice import parameters as P
 
 
 @pytest.fixture(scope="module")

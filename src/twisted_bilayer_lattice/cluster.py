@@ -12,7 +12,7 @@ root finders converge to it). Each cross bond's mean-field energy is in both of 
 
     Omega = sum_C E_C - Re sum_{cross (i -> j)} T_ij phi_i^* phi_j - sum_{cross pairs} V_ij <n_i><n_j>
 
-(the single-site formula of `manybody.gutzwiller`, restricted to cross bonds; one-site clusters reproduce it).
+(the single-site formula of `gutzwiller`, restricted to cross bonds; one-site clusters reproduce it).
 
 Tilings (`make_tiling`): "single"; "dimer" (a layer-1 site and a layer-2 site, by a minimum-cost perfect matching
 of the periodic minimum-image distances, `scipy.optimize.linear_sum_assignment`); "plus" (a site and its four
@@ -44,9 +44,9 @@ import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 import torch
 
-from twisted_bilayer.engine import lattice_model as lm
-from twisted_bilayer.manybody import gutzwiller as gw
-from twisted_bilayer.manybody import observables as ob
+from twisted_bilayer_lattice import gutzwiller as gw
+from twisted_bilayer_lattice import model as lm
+from twisted_bilayer_lattice import observables as ob
 
 # -- tilings --------------------------------------------------------------------------------------------------------
 

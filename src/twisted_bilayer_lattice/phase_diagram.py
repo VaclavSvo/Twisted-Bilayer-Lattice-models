@@ -1,8 +1,8 @@
 """Phase maps over (V0, Omega_R) with single-site Gutzwiller or cluster Gutzwiller, in the
 layout of Meng et al. Fig. 5a: V0 on x, Omega_R on y, the labels SF / SF-II / I / MI / ? (`observables`).
 
-    python -m twisted_bilayer.manybody.phase_diagram <row> --out <folder> [--device cuda] [--threads 1]
-    twisted-bilayer run phase_diagram_quick            (the scenario rows of kind "phase_diagram")
+    python -m twisted_bilayer_lattice.phase_diagram <row> --out <folder> [--device cuda] [--threads 1]
+    twisted-bilayer-lattice run phase_diagram_quick            (the scenario rows of kind "phase_diagram")
 
 Rows are the `ROWS` dict below; `scenarios.py` names some of them for the `run` command. Per grid point:
 
@@ -48,12 +48,12 @@ import time
 import numpy as np
 import torch
 
-from twisted_bilayer import config as CFG
-from twisted_bilayer import records as REC
-from twisted_bilayer.engine import lattice_model as lm
-from twisted_bilayer.manybody import gutzwiller as gw
-from twisted_bilayer.manybody import observables as ob
-from twisted_bilayer.manybody.paper_model import M_R_from_Omega, paper_model
+from twisted_bilayer_lattice import gutzwiller as gw
+from twisted_bilayer_lattice import model as lm
+from twisted_bilayer_lattice import observables as ob
+from twisted_bilayer_lattice._shared import config as CFG
+from twisted_bilayer_lattice._shared import records as REC
+from twisted_bilayer_lattice.paper_model import M_R_from_Omega, paper_model
 
 V0_FULL = tuple(float(v) for v in range(4, 25))  # 21 points
 OM_FULL = tuple(round(0.1 * k, 10) for k in range(13))  # 0 ... 1.2, 13 points
@@ -305,7 +305,7 @@ def _tiling(model, family):
     key = (family, model.n_sites, model.cell.L, model.bonds.rows.size, model.n_layers)
     t = _TILING_CACHE.get(key)
     if t is None or not np.array_equal(t[1], model.bonds.rows) or not np.array_equal(t[2], model.bonds.cols):
-        from twisted_bilayer.manybody import cluster as C
+        from twisted_bilayer_lattice import cluster as C
 
         t = (C.make_tiling(model, family), model.bonds.rows.copy(), model.bonds.cols.copy())
         _TILING_CACHE[key] = t
@@ -317,7 +317,7 @@ def solve_points_cluster(row: dict, models: list, device: str = "cpu", log=print
     converged Omega kept), the twists at fixed mu (theta -> 0 extrapolation), visibilities with the
     connected intra-cluster rho, the label. An unconverged twisted solve is resolved by the variational upper
     bound as in `solve_points` (`cluster.cluster_variational_omega`), or labelled "?"."""
-    from twisted_bilayer.manybody import cluster as C
+    from twisted_bilayer_lattice import cluster as C
 
     out = []
     th = tuple(row["thetas"])
@@ -570,11 +570,11 @@ def spec_hash(row: dict) -> str:
 
 
 def provenance() -> dict:
-    from twisted_bilayer import __version__
+    from twisted_bilayer_lattice import __version__
 
     return {
         "package": __version__,
-        "module": "twisted_bilayer.manybody.phase_diagram",
+        "module": "twisted_bilayer_lattice.phase_diagram",
         "python": sys.version.split()[0],
         "numpy": np.__version__,
         "torch": torch.__version__,

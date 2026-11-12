@@ -1,4 +1,4 @@
-"""engine.lattice_model: the two-layer tight-binding (Bose-Hubbard) model and its
+"""model: the two-layer tight-binding (Bose-Hubbard) model and its
 mean-field and Gutzwiller ground states.
 
 Pinned numbers and their sources:
@@ -21,9 +21,10 @@ import numpy as np
 import pytest
 import torch
 
-from twisted_bilayer.engine import bands
-from twisted_bilayer.engine import lattice_model as lm
-from twisted_bilayer.engine.units import KAPPA
+from twisted_bilayer_lattice import model as lm
+from twisted_bilayer_lattice._shared import config
+from twisted_bilayer_lattice._shared.engine import bands
+from twisted_bilayer_lattice._shared.engine.units import KAPPA
 
 V0 = 8.0
 
@@ -320,28 +321,26 @@ def test_trust_region_polish_reaches_the_minimum():
 
 @pytest.mark.slow
 def test_fs_m22_weak_links():
-    """The bridge's (V0, Omega_R) = (16, 0.6) on the experiment's m = 22 cell, two-band model: the pockets
+    """(V0, Omega_R) = (16, 0.6) on the experiment's m = 22 cell, two-band model (nu_z from the shipped inputs,
+    theta = 0.3, tol 1e-11, S cut at 2, frame "layer1", six bands in the interband sum): the pockets
     are weakly linked (lowest Hessian eigenvalue ~7e-7) and LBFGS + Newton stopped at residual 5.5e-7
     with E(0) 4.1e-5 E_R above the minimum, so the twist energy came out negative (f_s = -4.2e-3). With the
     trust-region polish both states converge (residual < 1e-11, minima) and the energy and current routes
     agree (2.172e-4 and 2.168e-4), with an error bound at rounding level."""
-    from twisted_bilayer.manybody.bridge import BridgeSpec
-
-    spec = BridgeSpec()
     r = lm.superfluid_fraction(
         16.0,
         0.6,
         22,
         1,
         1.0,
-        g2d=lm.g2d_from_nu_z(spec.nu_z_hz),
-        theta=spec.theta,
-        tol=spec.tb_tol,
-        cutoff=spec.cutoff,
+        g2d=lm.g2d_from_nu_z(config.NU_Z_HZ),
+        theta=0.3,
+        tol=1e-11,
+        cutoff=2.0,
         interlayer_interaction=True,
-        frame=spec.frame,
+        frame="layer1",
         interband=False,
-        interband_n_bands=spec.interband_n_bands,
+        interband_n_bands=6,
     )
     for g in (r["gs0"], r["gs_theta"]):
         assert g.residual < 1e-11 and g.hessian_min > 0
@@ -376,7 +375,7 @@ def test_gutzwiller_mott_tip_square_lattice():
 def test_g2d_from_nu_z_scaling_precedence_and_default_offset():
     """U = g2d (int w^4)^2 with g2d = g3d / (sqrt(2 pi) l_z), l_z ~ nu_z^-1/2: U ~ sqrt(nu_z) at fixed V0.
     Precedence: an explicit g2d wins, then nu_z_hz, then G2D_DEFAULT; the derived 1 kHz value is above
-    the shipped default by the documented 2.4e-4 (an offset of the kind of engine.units.EXCEPTIONS)."""
+    the shipped default by the documented 2.4e-4 (an offset of the kind of _shared.engine.units.EXCEPTIONS)."""
     cell = lm.supercell_sites(4, 1)
     U1 = lm.build_model(V0, 0.0, 4, 1, nu_z_hz=1000.0, cell=cell).U
     U4 = lm.build_model(V0, 0.0, 4, 1, nu_z_hz=4000.0, cell=cell).U
@@ -523,10 +522,7 @@ def test_interband_shift_against_continuum(Omega_R, factor):
 
 def test_pocket_fraction(cell22):
     """The share of the atoms within 1 a of an AA point: 1 for a state confined to those sites, 0 for one confined
-    to the AB points' neighbourhood, the share of the sites for a uniform state, and the continuum version on the
-    engine's grid agrees for a density that is 1 near the AA points and 0 elsewhere."""
-    from twisted_bilayer.manybody import bridge as B
-
+    to the AB points' neighbourhood, and the share of the sites for a uniform state."""
     AA, AB = lm.moire_points(cell22)
     c = cell22.c
 
@@ -543,15 +539,3 @@ def test_pocket_fraction(cell22):
     assert lm.pocket_fraction(cell22, sel_aa.astype(float)) == pytest.approx(1.0, abs=1e-14)
     assert lm.pocket_fraction(cell22, near(AB).astype(float)) == pytest.approx(0.0, abs=1e-14)
     assert lm.pocket_fraction(cell22, np.ones((2, c))) == pytest.approx(sel_aa.sum() / (2 * c), abs=1e-14)
-    N = 176
-    x = (np.arange(N) - N // 2) * (cell22.L / N)
-    X, Y = np.meshgrid(x, x, indexing="ij")
-    dens = np.zeros((N, N))
-    for p in AA:
-        dx = X - p[0]
-        dy = Y - p[1]
-        dx -= cell22.L * np.round(dx / cell22.L)
-        dy -= cell22.L * np.round(dy / cell22.L)
-        dens[dx * dx + dy * dy < 1.0] = 1.0
-    assert B.continuum_pocket_fraction(dens, cell22.L, cell22) == pytest.approx(1.0, abs=1e-14)
-    assert B.continuum_pocket_fraction(1.0 - dens, cell22.L, cell22) == pytest.approx(0.0, abs=1e-14)

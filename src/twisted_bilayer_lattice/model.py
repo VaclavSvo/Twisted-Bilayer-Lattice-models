@@ -10,7 +10,7 @@ eps_i = +delta/2 on layer 1 and -delta/2 on layer 2 (plus an optional site
 potential, e.g. a trap). Omega_R is the off-diagonal matrix element, as in the
 continuum engine.
 
-Geometry is the continuum model's frame exactly (`engine.lattice`): lattice 1
+Geometry is the continuum model's frame exactly (`_shared.engine.lattice`): lattice 1
 (potential U(R(+alpha) r)) has its sites at R(-alpha)(i, j), lattice 2 at
 R(+alpha)(i, j), tan(alpha) = n/m, AA at the origin, box [-L/2, L/2)^2 with
 L = sqrt(m^2 + n^2). In integer coordinates X = L x, Y = L y every site is a
@@ -20,7 +20,7 @@ M_2 = [[m, -n], [n, m]], and the box translations are X -> X + c, Y -> Y + c
 bookkeeping (wrapping, neighbour lookup, minimum image) is exact integer
 arithmetic.
 
-Matrix elements (from `engine.bands`, exact lowest band of V0 sin^2(pi x)):
+Matrix elements (from `_shared.engine.bands`, exact lowest band of V0 sin^2(pi x)):
   * J(d) = hopping_1d(V0) along each layer's own axes only (the Wannier
     function is a product w(x')w(y'), so there is no diagonal hopping);
     J1 and J2 by default (d_max = 2), longer range on request.
@@ -40,10 +40,10 @@ Matrix elements (from `engine.bands`, exact lowest band of V0 sin^2(pi x)):
     (see `build_model`).
 
 The paper's own simplified model (one layer, nearest-neighbour t, the other
-lattice as a site offset M_i) is built by `manybody.paper_model` as a
+lattice as a site offset M_i) is built by `paper_model` as a
 one-layer `LatticeModel`; every solver below takes it.
 
-Relative to the continuum model `engine.physics.BilayerGPE` the lattice model
+Relative to the continuum model `twisted_bilayer.engine.physics.BilayerGPE` the lattice model
 keeps the lowest band of each layer (exact J1, J2), the interlayer coupling
 projected on the two lowest bands, the on-site interaction, the geometry, twists
 (Peierls phases on every bond) and -- beyond the GPE -- number quantisation
@@ -67,7 +67,7 @@ autograd), Newton-polished to residual ~1e-15 and checked to be a minimum
 (lowest constrained Hessian eigenvalue >= 0; saddles in the inter-pocket
 phases are escaped).
 Superfluid fraction (`superfluid_fraction`) by phase twist with the
-continuum's definitions (`engine.observables`), by energy and by current.
+continuum's definitions (`twisted_bilayer.engine.observables`), by energy and by current.
 """
 
 from __future__ import annotations
@@ -79,16 +79,23 @@ import numpy as np
 import scipy.sparse as sp
 import torch
 
-from . import bands
-from .bands import bands_1d, hopping_1d, onsite_U, overlap_1d, wannier_1d
-from .lattice import MoireGeometry, moire_geometry
-from .observables import superfluid_fraction_energy
-from .units import KAPPA, lattice_units
+from ._shared.engine import bands
+from ._shared.engine.bands import bands_1d, hopping_1d, onsite_U, overlap_1d, wannier_1d
+from ._shared.engine.lattice import MoireGeometry, moire_geometry
+from ._shared.engine.units import KAPPA, lattice_units
+
+
+def superfluid_fraction_energy(
+    E_twist: torch.Tensor, E_zero: torch.Tensor, N: torch.Tensor, L: float, theta: float, kappa: float
+) -> torch.Tensor:
+    """f_s from the energy cost of a phase twist theta across a box of side L (the continuum's definition)."""
+    return (E_twist - E_zero) * L * L / (N * kappa * theta * theta)
+
 
 # The shipped interaction of the lattice model: g_3D/(sqrt(2 pi) l_z) at omega_z = 2 pi x 1 kHz, rounded.
 # The value derived from the engine's unit system, g2d_from_nu_z(1000) = lattice_units(omega_z_hz=1000).g2d
 # = 0.0157638 (a_s = 100 a0), is larger by G2D_DEFAULT_OFFSET -- an offset of the same kind as
-# engine.units.EXCEPTIONS, pinned in tests/test_lattice_model.py. Changing the default would move every
+# _shared.engine.units.EXCEPTIONS, pinned in tests/test_lattice_model.py. Changing the default would move every
 # lattice-model number, so it stays; pass nu_z_hz=... (or g2d=...) for the derived value (`resolve_g2d`).
 G2D_DEFAULT = 0.01576  # E_R a^2
 G2D_DEFAULT_OFFSET = 2.4e-4  # g2d_from_nu_z(1000) / G2D_DEFAULT - 1
@@ -97,7 +104,7 @@ G2D_DEFAULT_OFFSET = 2.4e-4  # g2d_from_nu_z(1000) / G2D_DEFAULT - 1
 def g2d_from_nu_z(nu_z_hz: float) -> float:
     """g2d (E_R a^2) of the fixed-width vertical reduction at the pancake frequency nu_z (Hz):
     g_3D / (sqrt(2 pi) l_z) with l_z = sqrt(hbar / m omega_z), i.e. g2d ~ sqrt(nu_z), through
-    `engine.units.lattice_units` (a_s = 100 a0)."""
+    `_shared.engine.units.lattice_units` (a_s = 100 a0)."""
     return lattice_units(omega_z_hz=float(nu_z_hz)).g2d
 
 
@@ -609,7 +616,7 @@ def density_overlap_1d(V0: float, d, n_x: int = 64, n_q: int = 64) -> np.ndarray
 class LatticeModel:
     """A tight-binding model on the sites of the supercell: n_layers x c sites (global index
     layer * c + site), the off-diagonal part of H0 as `bonds`, its diagonal as `onsite`. The two-layer
-    model of `build_model` has n_layers = 2; the paper's one-layer model (`manybody.paper_model`,
+    model of `build_model` has n_layers = 2; the paper's one-layer model (`paper_model`,
     variant "paper") has n_layers = 1 and uses the sites of lattice 1 only. Every solver here
     (`ground_state`, `superfluid_fraction`, `gutzwiller`, `lattice_bands`) takes either."""
 
@@ -628,7 +635,7 @@ class LatticeModel:
     g2d: float | None = None  # the interaction input behind U (None if U was given directly)
     g2d_source: str = ""  # "explicit", "nu_z", "default" (`resolve_g2d`) or "paper"
     nu_z_hz: float | None = None  # the pancake frequency behind g2d, if that is how it was given
-    variant: str = "bilayer"  # "bilayer" (`build_model`) or "paper" (`manybody.paper_model`)
+    variant: str = "bilayer"  # "bilayer" (`build_model`) or "paper" (`paper_model`)
     mu_over_U: float | None = None  # the model's own chemical potential (the paper's mu/U = 1), if any
     interband: bool = False  # the second-order interband shift is included (`interband_shift`)
 
@@ -827,7 +834,7 @@ def compare_with_continuum(
     lowest level from the decoupled band bottom (TB: E_0 + 4 sum J_d;
     continuum: E_0 - 2 E_1D(q = 0), the exact 1D band bottom), and (iii)
     absolute levels after adding the on-site energy 2 eps_1D."""
-    from .bands import moire_bands_q0
+    from ._shared.engine.bands import moire_bands_q0
 
     tb = lattice_bands(V0, Omega_R, m, n, n_bands, delta, **model_kw)
     cont = moire_bands_q0(V0, Omega_R, m, n, points_per_a=points_per_a, n_bands=n_bands, delta=delta)
@@ -1418,7 +1425,7 @@ def superfluid_fraction(
 ) -> dict:
     """f_s along `axis` by phase twist (theta across the box, the continuum
     sweep's default 0.3; Peierls phases on every intra- and interlayer bond),
-    with the continuum's definitions (`engine.observables`):
+    with the continuum's definitions (`twisted_bilayer.engine.observables`):
         energy:  f_s = (E(theta) - E(0)) L^2 / (N kappa theta^2),
         current: f_s = L^2 I / (2 kappa N theta).
     g2d / nu_z_hz as in `build_model` (`resolve_g2d`).

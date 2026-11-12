@@ -1,4 +1,4 @@
-"""The phase-map driver (manybody/phase_diagram.py) and the S4c gate (the four panels of Meng et al.'s Fig. S4c)."""
+"""The phase-map driver (phase_diagram.py) and the S4c gate (the four panels of Meng et al.'s Fig. S4c)."""
 
 import json
 import os
@@ -6,9 +6,9 @@ import os
 import numpy as np
 import pytest
 
-from twisted_bilayer.engine import lattice_model as lm
-from twisted_bilayer.manybody import observables as ob
-from twisted_bilayer.manybody import phase_diagram as pd
+from twisted_bilayer_lattice import model as lm
+from twisted_bilayer_lattice import observables as ob
+from twisted_bilayer_lattice import phase_diagram as pd
 
 
 def _tiny_row():
@@ -189,9 +189,9 @@ def test_u_correction_table(tmp_path):
 
 
 def test_runner_kind_keeps_both_provenance_files(tmp_path):
-    """`twisted-bilayer run` with a phase-map row: the runner's provenance.json does not overwrite the map's own
+    """`twisted-bilayer-lattice run` with a phase-map row: the runner's provenance.json does not overwrite the map's own
     run history (phase_diagram_provenance.json)."""
-    from twisted_bilayer import runners
+    from twisted_bilayer_lattice import runners
 
     verbose, out_root = runners.VERBOSE, runners._OUT_ROOT
     runners.VERBOSE = False

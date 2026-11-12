@@ -1,12 +1,11 @@
 # The lattice model beyond mean field
 
-The plan is `roadmap-beyond-mean-field.md`; this page documents what the `manybody` package does so far: the
-Hamiltonian and its parameters, the bridge to the continuum, single-site and cluster Gutzwiller and the phase
-maps. Lattice units: a = 1, E_R = 1, ħ = 1.
+This page documents what the package `twisted_bilayer_lattice` does: the Hamiltonian and its parameters,
+single-site and cluster Gutzwiller and the phase maps. Lattice units: a = 1, E_R = 1, ħ = 1.
 
 ## The Hamiltonian and its inputs
 
-`engine.lattice_model.build_model` assembles the two-layer Bose–Hubbard model on the commensurate supercell
+`model.build_model` assembles the two-layer Bose–Hubbard model on the commensurate supercell
 (its docstring lists what the model keeps and drops):
 
     H = − Σ_σ Σ_{i≠i'} J(|R_i − R_i'|) b_i† b_i' + Ω_R Σ_ij S(R_i − R'_j)(b_i† c_j + h.c.)
@@ -14,16 +13,16 @@ maps. Lattice units: a = 1, E_R = 1, ħ = 1.
 
 Every input comes from `config.py`: V₀ gives J(d) (the exact lowest band, `bands.hopping_1d`) and the
 overlaps S (`bands.overlap_1d`); the pancake frequency ν_z gives g₂D = g₃D/(√(2π) l_z) through
-`engine.units.lattice_units` and U = g₂D (∫w⁴)², so U ∝ √ν_z. The interaction input of every lattice
+`_shared.engine.units.lattice_units` and U = g₂D (∫w⁴)², so U ∝ √ν_z. The interaction input of every lattice
 function (`build_model`, `ground_state`, `superfluid_fraction`, `gutzwiller`, the `tight_binding` row) is
-resolved by `lattice_model.resolve_g2d`: an explicit `g2d` wins; otherwise `nu_z_hz` gives
+resolved by `model.resolve_g2d`: an explicit `g2d` wins; otherwise `nu_z_hz` gives
 `g2d_from_nu_z(nu_z_hz)`; otherwise the shipped `G2D_DEFAULT = 0.01576`. The derived 1 kHz value,
 0.0157638, is 2.4 × 10⁻⁴ above the shipped default (the engine's a_s = 100 a₀ against the rounded constant;
-an offset of the kind listed in `engine.units.EXCEPTIONS`). The default is unchanged on purpose: moving it
+an offset of the kind listed in `_shared.engine.units.EXCEPTIONS`). The default is unchanged on purpose: moving it
 would move every lattice-model number, and that is a decision for the author. The model records which
 value it used (`g2d`, `g2d_source`, `nu_z_hz`).
 
-## The parameter audit (`manybody.parameters`, `scripts/parameter_audit.py`)
+## The parameter audit (`parameters`, `scripts/parameter_audit.py`)
 
 The paper's mean-field phase diagram (Meng et al., Nature 615, 231 (2023), Supplement Sec. IV, Eq. 13) uses
 
@@ -35,14 +34,14 @@ a_s = `config.A_S_M` (5.29 nm); `audit_table` puts them next to the exact J₁, 
 U(ν_z), U/J₁, and `transition_depths` solves U/J = (U/J)_c of the plain square lattice for V₀ with either
 set, at the single-site mean-field lobe tip U/zJ = 3 + 2√2 (U/J = 23.31) and the worm-Monte-Carlo value
 (U/J)_c = 1/0.05974(3) = 16.74 (Capogrosso-Sansone, Söyler, Prokof'ev and Svistunov, Phys. Rev. A 77,
-015602 (2008)); both are anchors in `gates.references`. The tests pin three rows and the four depths.
+015602 (2008)); both are anchors in `references`. The tests pin three rows and the four depths.
 
 The paper quotes U/t = 1.67 at 4 E_R (Fig. 4 caption) where its formulas give 1.62; the audit reports the
 gap and the single changes that would close it (a_s = 102.8 a₀, or V₀ = 4.055 E_R) without applying any.
 Ω_R/t = 2.07 in the same caption with the paper's t is Ω_R = 0.242 E_R, the "paper-literal" reading of
 `config.J_PERP_CODE`.
 
-## The paper's own model (`manybody.paper_model`, variant "paper")
+## The paper's own model (`paper_model`, variant "paper")
 
 Supplement Eqs. 12–13: one layer, nearest-neighbour t, the paper's U, μ/U = 1, and the other lattice as a
 site offset
@@ -51,7 +50,7 @@ site offset
 
 built on the c = m² + n² sites of lattice 1 of the supercell with the exact rational cos θ = (m² − n²)/c,
 sin θ = 2mn/c of the commensurate twist (M = 0 at AA, 2 M_R at AB). `paper_model(V0, M_R, ...)` returns a
-one-layer `LatticeModel`, and every solver of `lattice_model` takes it (`ground_state`,
+one-layer `LatticeModel`, and every solver of `model` takes it (`ground_state`,
 `superfluid_fraction`, `lattice_bands`, `gutzwiller`, which uses the model's μ/U when given neither μ/U
 nor a filling). The paper does not say how M_R depends on Ω_R. M_R is an explicit input, and
 `M_R_from_Omega(V0, Omega_R, rule)` offers three documented readings, all assumptions:
@@ -65,7 +64,7 @@ nor a filling). The paper does not say how M_R depends on Ω_R. M_R is an explic
   Eq. 8 at a lattice-1 site (V_eff = V₂/2 − V₂²/(8Ω_R) + const; equivalently Eq. 9). Independent of Ω_R,
   and the dropped quadratic term is the Ω_R ≫ V₀ expansion, outside the experiment's range.
 
-## The sign audit (`manybody.parameters.sign_audit`)
+## The sign audit (`parameters.sign_audit`)
 
 For a bosonic Monte Carlo the off-diagonal elements of H₀ must be ≤ 0. Intralayer, −J₁ < 0 is fine and
 −J₂ > 0 (J₂ < 0) is not. Interlayer, +Ω_R S_ij is positive for every pair inside |d'| < 1; the gauge
@@ -74,7 +73,7 @@ c_j → −c_j on layer 2 makes those negative and leaves the pairs with S < 0 (
 class, the directed entries that stay positive and the fraction of the weight Σ|amp| they carry. The
 numbers at V₀ = 12, Ω_R = 0.5 are pinned in `tests/manybody/test_parameters.py`.
 
-## The interband shift (`engine.lattice_model.interband_shift`, `build_model(interband=True)`)
+## The interband shift (`model.interband_shift`, `build_model(interband=True)`)
 
 Ω_R couples the lowest-band Wannier function of one layer to the higher bands β of the other, which the
 two-band model drops. Second order in that coupling (Schrieffer–Wolff) gives, for lattice-1 sites i, i',
@@ -123,34 +122,10 @@ by up to 0.016 E_R in μ − E_bottom and 0.022 in f_s at V₀ = 8 (Ω_R = 0.6�
 bonds; at V₀ = 12 and 16 it is within 0.01 E_R and 0.002.
 
 `interband` stays **off by default** in `build_model`; `bh_parameters(V0, Omega_R=...)` reports the
-shift's summary (ε at AA and AB, its minimum, the moiré depth with it) and the bridge runs both. Whether
-to make it the default is the author's decision (it passed its validation).
+shift's summary (ε at AA and AB, its minimum, the moiré depth with it). Whether to make it the default is the
+author's decision (it passed its validation).
 
-## The bridge (`manybody.bridge`, scenarios `bridge_quick` and `bridge`)
-
-The same mean field on both sides: the discrete GPE of the two-layer model (variant C: S cut at |d'| < 2,
-the interlayer V_ij, J₁ + J₂, with and without the interband shift) against the continuum GPE
-(`engine.sweep.coupling_scan` with `vertical="fixed"` at the same g₂D(ν_z); NPSE would compare different
-models) on the same cell, filling and twist, for V₀ ∈ {8, 12, 16} and Ω_R ∈ {0, 0.24, 0.6, 1.0}. Compared:
-μ − E_bottom and E/N − E_bottom from each model's own decoupled band bottom (−4 Σ J_d on the lattice,
-2 E_1D(q = 0) in the continuum; the lattice measures energies from the on-site energy 2 ε_1D), f_s by the
-twist energy, the AA/AB density ratio with the same 1 a discs at the moiré points, N₂/N, and the
-participation ratio (over sites against over grid points, not the same object). Output: `bridge.txt`
-(the table), `bridge.json`, `bridge.png` (the differences against Ω_R per V₀). One gate: at V₀ = 16,
-Ω_R = 0 the two μ − E_bottom agree to 3 % (measured: 1.45 % on m = 4, 1.46 % on m = 22); if not the run stops,
-since that would be a units or reference-energy mismatch. Always complex128 (energy differences of 10⁻³ E_R).
-
-## The occupation-dependent U (`manybody.parameters.occupation_dependent_U`, report only)
-
-With n atoms in one Wannier orbital the pancake broadens locally. The NPSE width s(n₂D) (`engine.npse`,
-s⁴ − x s − 1 = 0, x = g₂D n₂D / ħω_z) at the local density n w(x)² w(y)² gives the mean-field interaction
-energy E_int(n) = ∫ e_int d²r and U_n = 2 E_int/n² (U_n → U as n → 0). At 1 kHz the peak density of one
-atom is 9.5 (12 E_R) to 11.2 (16 E_R) atoms per a², x = 0.55–0.65 for one atom and 1.1–1.3 for two, so
-the site's width grows by 13–15 % (one atom) and 24–28 % (two); U₁ is 4–5 % below the fixed-width U and
-U₂/U₁ = 0.964 (12 E_R), 0.959 (16 E_R). This is below a 5 % flag for the ratio
-U₂/U₁, but U₂ is 8–9 % below the fixed-width U: a systematic of the same size as the ν_z question.
-
-## Single-site Gutzwiller (`manybody.gutzwiller`)
+## Single-site Gutzwiller (`gutzwiller`)
 
 A variational ground-state (T = 0) method: Ω = ⟨Ψ|H − μN|Ψ⟩ is minimised over product states
 |Ψ⟩ = ⊗ᵢ Σₙ cᵢₙ |n⟩ᵢ, n = 0 … n_max. At a stationary point every site's amplitudes are the ground state of
@@ -158,9 +133,9 @@ A variational ground-state (T = 0) method: Ω = ⟨Ψ|H − μN|Ψ⟩ is minimis
     Hᵢ = (U/2) n(n − 1) + (εᵢ + hᵢ − μ) n + Ψᵢ b† + Ψᵢ* b,   Ψᵢ = Σⱼ Tᵢⱼ(θ) φⱼ,   hᵢ = Σⱼ Vᵢⱼ ⟨nⱼ⟩,
 
 an (n_max + 1)-dimensional tridiagonal matrix that depends on the neighbours' φⱼ = ⟨bⱼ⟩ and ⟨nⱼ⟩. The conditions
-are solved by the damped map φ ← φ + β (G(φ) − φ) of `lattice_model._gutzwiller_solve` (β = 1.6/(1 + r), the
+are solved by the damped map φ ← φ + β (G(φ) − φ) of `model._gutzwiller_solve` (β = 1.6/(1 + r), the
 Mott jump to φ = 0 once the decay ratio settles below 1 at |φ| < 10⁻⁵), operation for operation, so at θ = 0 the
-solver reproduces `lattice_model.gutzwiller` bit for bit. The twist enters as Peierls phases on every bond
+solver reproduces `model.gutzwiller` bit for bit. The twist enters as Peierls phases on every bond
 (complex arithmetic only at θ ≠ 0); a batch runs models of one bond structure together with per-member
 convergence; four starts are solved and the lowest converged Ω is kept.
 
@@ -177,7 +152,7 @@ convergence; four starts are solved and the lowest converged Ω is kept.
   they share the label. Root-finding accelerators (Anderson mixing, Newton–Krylov) applied to the map converge to
   saddle points of Ω there, which satisfy the stopping test; the damped map does not.
 
-## Cluster Gutzwiller (`manybody.cluster`)
+## Cluster Gutzwiller (`cluster`)
 
 The product runs over clusters C of sites treated exactly (every bond inside C, with its twist phase), coupled to
 the rest by the mean fields Ψᵢ and hᵢ of the cross bonds; Ω = Σ_C E_C − Re Σ_cross Tᵢⱼ φᵢ* φⱼ −
@@ -188,7 +163,7 @@ lattice reproduces exact diagonalisation (tests). Tilings: single, interlayer di
 of the Mott state with the exact cluster susceptibility: 23.31 (single site), 21.76 (plus), 21.19 (2 × 2), 20.30
 (3 × 3), against 16.74 from quantum Monte Carlo.
 
-## Phase maps (`manybody.phase_diagram`, scenario kind `phase_diagram`)
+## Phase maps (`phase_diagram`, scenario kind `phase_diagram`)
 
 Per grid point (V₀, Ω_R): the model (the full two-layer model of `build_model`, or the paper's one-layer model
 with M_R from `M_R_from_Omega`), μ = (μ/U) U from the row's zero (`mu_ref`: "onsite", or "aa" = the AA level

@@ -1,0 +1,73 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "twisted-bilayer-lattice"
+version = "0.3.0"
+description = "Lattice (Bose-Hubbard) models of a Bose-Einstein condensate in twisted-bilayer optical lattices: mean field, single-site and cluster Gutzwiller, phase maps, in PyTorch"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Václav Svoboda" }]
+requires-python = ">=3.10"
+keywords = ["Bose-Einstein condensate", "Bose-Hubbard", "Gutzwiller", "moire", "optical lattice", "PyTorch"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+dependencies = [
+    "numpy>=2.0",
+    "scipy>=1.11",
+    "matplotlib>=3.8",
+    "torch>=2.1",
+    "threadpoolctl>=3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "ruff>=0.6,<1"]
+# the five-model showcase compares the lattice models with the continuum (Gross-Pitaevskii) package
+showcase = [
+    "twisted-bilayer @ git+https://github.com/VaclavSvo/3D-GPE-Twisted-Bilayer-optical-lattices@v0.3.0",
+    "notebook",
+    "ipykernel",
+]
+
+[project.scripts]
+twisted-bilayer-lattice = "twisted_bilayer_lattice.cli:main"
+
+[project.urls]
+Repository = "https://github.com/VaclavSvo/Twisted-Bilayer-Lattice-models"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-m 'not slow' --import-mode=importlib"
+markers = ["slow: tests over ~20 s on one core (the long Gutzwiller, cluster and phase-map checks); run with -m slow or check.py --all"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = ["src/twisted_bilayer_lattice/_shared/config.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "NPY"]
+ignore = [
+    "E501",  # line length is the formatter's job; long strings and comments stay
+    "E741",  # l, I, O as names: physics notation (I = current, ...)
+    "E731",  # small lambdas for transfer functions
+    "B905",  # zip() without strict=
+]
+
+[tool.ruff.lint.per-file-ignores]
+# the device / thread count must be fixed before torch and the package are imported
+"tests/conftest.py" = ["E402"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["twisted_bilayer_lattice"]

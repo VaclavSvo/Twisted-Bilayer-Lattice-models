@@ -1,4 +1,4 @@
-"""Common many-body observables (manybody/observables.py): the momentum distribution, the visibilities and
+"""Common many-body observables (observables.py): the momentum distribution, the visibilities and
 the phase label."""
 
 import math
@@ -6,9 +6,9 @@ import math
 import numpy as np
 import pytest
 
-from twisted_bilayer.engine import lattice_model as lm
-from twisted_bilayer.manybody import observables as ob
-from twisted_bilayer.manybody.paper_model import paper_model
+from twisted_bilayer_lattice import model as lm
+from twisted_bilayer_lattice import observables as ob
+from twisted_bilayer_lattice.paper_model import paper_model
 
 
 def _square(m=22, n=1, M_R=0.0, V0=12.0):

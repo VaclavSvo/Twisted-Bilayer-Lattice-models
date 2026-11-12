@@ -1,4 +1,4 @@
-"""Cluster Gutzwiller (manybody/cluster.py): tilings, the reduction to single-site Gutzwiller, a cluster that
+"""Cluster Gutzwiller (cluster.py): tilings, the reduction to single-site Gutzwiller, a cluster that
 covers a whole periodic lattice against an independent exact diagonalisation, the twist, and the
 square-lattice lobe tip against the single-site and QMC anchors."""
 
@@ -11,11 +11,11 @@ import pytest
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 
-from twisted_bilayer.engine import lattice_model as lm
-from twisted_bilayer.gates.references import anchor
-from twisted_bilayer.manybody import cluster as C
-from twisted_bilayer.manybody import gutzwiller as gw
-from twisted_bilayer.manybody.paper_model import paper_model
+from twisted_bilayer_lattice import cluster as C
+from twisted_bilayer_lattice import gutzwiller as gw
+from twisted_bilayer_lattice import model as lm
+from twisted_bilayer_lattice.paper_model import paper_model
+from twisted_bilayer_lattice.references import anchor
 
 FULL = dict(nu_z_hz=1000.0, cutoff=2.0, interlayer_interaction=True, interband=True, interband_bonds=False)
 

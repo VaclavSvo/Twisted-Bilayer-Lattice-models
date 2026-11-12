@@ -5,10 +5,10 @@ model and in the paper's model (including a Mott point, where the site matrices 
 import numpy as np
 import pytest
 
-from twisted_bilayer.engine import lattice_model as lm
-from twisted_bilayer.manybody import fast_kernels as fk
-from twisted_bilayer.manybody import gutzwiller as gw
-from twisted_bilayer.manybody.paper_model import M_R_from_Omega, paper_model
+from twisted_bilayer_lattice import fast_kernels as fk
+from twisted_bilayer_lattice import gutzwiller as gw
+from twisted_bilayer_lattice import model as lm
+from twisted_bilayer_lattice.paper_model import M_R_from_Omega, paper_model
 
 FULL = dict(nu_z_hz=1000.0, cutoff=2.0, interlayer_interaction=True, interband=True, interband_bonds=False)
 

@@ -1,6 +1,6 @@
 """Single-site Gutzwiller mean field with twisted boundaries, batching and several starts.
 
-The self-consistent damped map is the one of `engine.lattice_model._gutzwiller_solve`, rewritten here so that
+The self-consistent damped map is the one of `model._gutzwiller_solve`, rewritten here so that
 it can carry a twist and a batch dimension without touching the engine: each site sees
 
     H_i = Psi_i b^dag + Psi_i^* b + (U/2) n (n - 1) + (eps_i + h_i - mu) n,
@@ -10,7 +10,7 @@ with T(theta) the off-diagonal part of H0 carrying the Peierls phases of the twi
 (`Bonds.amplitudes`, psi = e^{i q.r} phi, q = theta / L), and x <- x + beta (G(x) - x) for x = phi (and <n>
 if the model has V). The map, its Mott detection (a settled decay ratio below 1 at |phi| < 1e-5 jumps to
 phi = 0), the damping beta = 1.6 / (1 + r) (`default_mixing`) and the start (`lowest_start`) are the
-engine's, operation for operation, so at theta = 0 `solve` reproduces `lattice_model.gutzwiller` (pinned in
+engine's, operation for operation, so at theta = 0 `solve` reproduces `model.gutzwiller` (pinned in
 tests/manybody/test_gutzwiller_twist.py). The arithmetic is real at theta = 0 with a real start, complex
 otherwise.
 
@@ -18,7 +18,7 @@ Only public fields of the `LatticeModel` are read (`bonds`, `onsite`, `U`, `V_pa
 `hamiltonian()`, `cell`, `n_layers`, `coupled`). `n_max` is always explicit.
 
 Superfluid fraction by the twist at fixed mu (the energy route; to second order the same as the fixed-N
-route of `lattice_model.superfluid_fraction` and the continuum):
+route of `model.superfluid_fraction` and the continuum):
 
     f_s(theta) = (Omega(theta) - Omega(0)) L^2 / (N kappa theta^2),   theta across the box along x,
 
@@ -34,9 +34,9 @@ import numpy as np
 import scipy.sparse as sp
 import torch
 
-from twisted_bilayer.engine import lattice_model as lm
-from twisted_bilayer.engine.units import KAPPA
-from twisted_bilayer.manybody import fast_kernels as fk
+from twisted_bilayer_lattice import fast_kernels as fk
+from twisted_bilayer_lattice import model as lm
+from twisted_bilayer_lattice._shared.engine.units import KAPPA
 
 THETA_FS = (0.3, 0.15)  # the two twists of the theta -> 0 extrapolation
 START_NAMES = ("lowest", "pocket", "random1", "random2")
@@ -116,7 +116,7 @@ class GWState:
 def lowest_start(model: lm.LatticeModel) -> np.ndarray:
     """0.7 v / max|v| with v the lowest single-particle state at zero twist (layer-balanced sum of each
     layer's lowest state if the layers are uncoupled: phi = 0 on a whole layer never grows). The same
-    calls as `lattice_model._initial_phi` and the default start of `lattice_model.gutzwiller`."""
+    calls as `model._initial_phi` and the default start of `model.gutzwiller`."""
     H = model.hamiltonian((0.0, 0.0))
     c = model.cell.c
 
@@ -170,7 +170,7 @@ def make_start(model: lm.LatticeModel, name: str) -> np.ndarray:
 
 def default_mixing(model: lm.LatticeModel) -> float:
     """beta = 1.6 / (1 + r), r = |lambda_max / lambda_min| of T (0.5 if T has no negative eigenvalue), capped
-    at 1: the damping of `lattice_model._default_mixing` (keeps the staggered phase mode stable)."""
+    at 1: the damping of `model._default_mixing` (keeps the staggered phase mode stable)."""
     H = model.hamiltonian()
     T = (H - sp.diags(H.diagonal())).toarray()
     lam = np.linalg.eigvalsh(T)
@@ -619,7 +619,7 @@ def solve_filling(
     model: lm.LatticeModel, filling: float, n_max: int, theta=(0.0, 0.0), phi0=None, max_bisect: int = 200, **kw
 ) -> GWState:
     """The state at `filling` (atoms per a^2 over all layers, sum <n> = filling c): mu by the safeguarded regula
-    falsi alternating with bisection of `lattice_model.gutzwiller` (N(mu) has kinks at the lobe edges)."""
+    falsi alternating with bisection of `model.gutzwiller` (N(mu) has kinks at the lobe edges)."""
     c, U = model.cell.c, model.U
     start = lowest_start(model) if phi0 is None else np.asarray(phi0, dtype=np.complex128)
 
@@ -656,7 +656,7 @@ def solve_filling(
 
 
 def compressibility(model: lm.LatticeModel, state: GWState, n_max: int, dmu_over_U: float = 0.01, **kw) -> float:
-    """d filling / d mu by central difference +- dmu_over_U U, warm-started (as `lattice_model.gutzwiller`)."""
+    """d filling / d mu by central difference +- dmu_over_U U, warm-started (as `model.gutzwiller`)."""
     dmu = dmu_over_U * model.U
     p0 = state.phi if float(np.abs(state.phi).max()) > 1e-3 else lowest_start(model)
     Np = solve(model, state.mu + dmu, n_max, state.theta, p0, **kw).N

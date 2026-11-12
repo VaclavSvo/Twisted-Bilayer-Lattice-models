@@ -1,12 +1,12 @@
-"""manybody.parameters: the Bose-Hubbard parameter audit, the transition depths and the sign audit.
+"""parameters: the Bose-Hubbard parameter audit, the transition depths and the sign audit.
 
 Pinned numbers and their sources:
   * the paper's t and U: closed forms (Meng et al. Supplement Eq. 13; Zwerger 2003), evaluated here;
   * three rows of the audit table (V0 = 4, 10, 16; `parameters.audit_table`, computed from
     `bands` and the paper's formulas with a_s = 5.29 nm, U at 1 kHz), to 1e-3 relative: that tolerance covers
-    the 2.4e-4 between the derived g2d and lattice_model.G2D_DEFAULT;
+    the 2.4e-4 between the derived g2d and model.G2D_DEFAULT;
   * the four depths of the plain-square-lattice Mott transition, 11.1 / 10.0 (paper) and 17.6 / 16.1 (exact
-    J1, 1 kHz U) at U/J = 23.31 / 16.74, to 0.05 E_R (same source; the U/J values are gates.references anchors);
+    J1, 1 kHz U) at U/J = 23.31 / 16.74, to 0.05 E_R (same source; the U/J values are references anchors);
   * the sign audit at V0 = 12, Omega_R = 0.5 on the m = 22 cell: cutoff 1 gives 3874 directed interlayer
     entries all of one sign; cutoff 2 gives 15,506 entries, 7752 of the minority sign carrying 1.27 % of the
     interlayer weight; |J2|/J1 = 7.2 % at 4 E_R, 1.2 % at 10, 0.7 % at 12 (`bands`).
@@ -17,11 +17,11 @@ import math
 import numpy as np
 import pytest
 
-from twisted_bilayer import config
-from twisted_bilayer.engine import bands
-from twisted_bilayer.engine import lattice_model as lm
-from twisted_bilayer.gates.references import anchor
-from twisted_bilayer.manybody import parameters as P
+from twisted_bilayer_lattice import model as lm
+from twisted_bilayer_lattice import parameters as P
+from twisted_bilayer_lattice._shared import config
+from twisted_bilayer_lattice._shared.engine import bands
+from twisted_bilayer_lattice.references import anchor
 
 # V0: (paper t, paper U, paper U/t, exact J1, J2/J1, U at 1 kHz, U/J1); the audit table to 4 digits, with
 # the full-precision digits where the table rounds further
@@ -146,23 +146,6 @@ def test_J2_over_J1_by_depth(V0, ratio):
     J = bands.hopping_1d(V0, 2)
     assert J[1] < 0.0 < J[0]
     assert abs(J[1] / J[0]) == pytest.approx(ratio, abs=5e-4)
-
-
-def test_occupation_dependent_U():
-    """The NPSE broadening of a site under n atoms: U_n -> U as n -> 0 (the fixed width), U_n decreases
-    with n, and at the 1 kHz pancake U_2/U_1 = 0.964 at 12 E_R and 0.959 at 16 E_R (a 3.6-4.1 %
-    effect, under the 0.95 flag of `occupation_dependent_U`), with U_1 itself 4-5 % below the fixed-width U."""
-    r = P.occupation_dependent_U(12.0, n_list=(0.001, 1, 2, 3))
-    assert r["n"][0]["U_n_over_U"] == pytest.approx(1.0, abs=1e-4)
-    assert r["n"][1]["U_n_over_U"] > r["n"][2]["U_n_over_U"] > r["n"][3]["U_n_over_U"]
-    assert r["U_fixed"] == pytest.approx(bands.onsite_U(12.0, lm.g2d_from_nu_z(config.NU_Z_HZ)), rel=1e-12)
-    assert r["peak_density_1"] == pytest.approx(bands.wannier_1d(12.0)[1].max() ** 4, rel=1e-9)
-    assert r["U2_over_U1"] == pytest.approx(0.964, abs=0.003) and r["n"][1]["U_n_over_U"] == pytest.approx(
-        0.959, abs=0.003
-    )
-    r16 = P.occupation_dependent_U(16.0, n_list=(1, 2))
-    assert r16["U2_over_U1"] == pytest.approx(0.959, abs=0.003)
-    assert 1.0 < r16["n"][2]["x_peak"] < 1.5 and 1.2 < r16["n"][2]["s_peak"] < 1.35
 
 
 def test_bh_parameters_interband_summary(cell22):

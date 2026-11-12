@@ -17,8 +17,8 @@ import time
 import numpy as np
 import torch
 
-from twisted_bilayer.manybody import gutzwiller as gw
-from twisted_bilayer.manybody import phase_diagram as pd
+from twisted_bilayer_lattice import gutzwiller as gw
+from twisted_bilayer_lattice import phase_diagram as pd
 
 
 def main() -> int:
